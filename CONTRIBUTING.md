@@ -1,5 +1,15 @@
 # Contributing
 
+Thanks for taking the time to look at this project!
+
+Contributions are governed by the [Apache-2.0 License](LICENSE), and
+participation by the [Code of Conduct](CODE_OF_CONDUCT.md).
+
+By opening a pull request you agree that your contribution is licensed under the
+Apache License 2.0, the same terms as the rest of the repository.
+
+Do not report security issues here - see [SECURITY.md](SECURITY.md).
+
 ## Commit Message Convention
 
 This project uses [Conventional Commits](https://www.conventionalcommits.org/) for automatic versioning.

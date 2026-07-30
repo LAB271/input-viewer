@@ -1,0 +1,21 @@
+# A public repo publishes its dependency tree, so a known-vulnerable pin is
+# visible to everyone - keep the updates flowing.
+#
+# `cooldown` waits out a freshly published version, which is the cheap mitigation
+# for a compromised release being pulled straight into a PR.
+#
+# The Electron app is not at the repo root, so `npm` is pointed at its directory.
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/input_viewer_electron"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
