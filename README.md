@@ -105,7 +105,7 @@ Works with:
 
 ## Legacy Python Version
 
-The original Python implementation is available in [`input_viewer_python/`](input_viewer_python/) but is no longer maintained. Use the Electron version for the best experience.
+The original Python implementation was removed in v2.6.0 (it carried a GPL dependency). It remains available in the [`v2.5.3` source tree](https://github.com/Lab271/labs-input-viewer/tree/v2.5.3/input_viewer_python) but is no longer maintained. Use the Electron version for the best experience.
 
 ## Contributing
 
