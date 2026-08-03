@@ -212,6 +212,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
 
@@ -227,15 +228,56 @@ jobs:
           cd input_viewer_electron
           npm version "$VERSION" --no-git-tag-version --allow-same-version
 
-      - name: Commit and tag
+      # `main` is a protected branch, so the bump cannot be pushed to it
+      # directly ("GH006: Changes must be made through a pull request"). Open a
+      # branch + PR and merge that instead, then tag the resulting commit on
+      # main. Tag pushes are not blocked by branch protection, but the tag must
+      # point at the merged bump so VERSION stays the source of truth.
+      - name: Open bump PR and merge it
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
           VERSION="${{ needs.analyze.outputs.new_version }}"
+          BRANCH="chore/bump-v${VERSION}"
+
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
           git add VERSION input_viewer_electron/package.json
           git commit -m "chore: bump version to $VERSION"
-          git tag -a "v${VERSION}" -m "Release v${VERSION}"
-          git push
+          git push origin "$BRANCH"
+
+          gh pr create \
+            --base main \
+            --head "$BRANCH" \
+            --title "chore: bump version to $VERSION" \
+            --body "Automated version bump for the v${VERSION} release. Opened by the Release workflow because \`main\` is protected and cannot be pushed to directly."
+
+          # Squash so main gets exactly one bump commit per release.
+          gh pr merge "$BRANCH" --squash --delete-branch
+
+      - name: Tag the merged bump
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.analyze.outputs.new_version }}"
+
+          # Read main back from the remote: the squash produced a new commit
+          # that does not exist locally, and that is what the tag must point at.
+          git fetch origin main
+          SHA="$(git rev-parse origin/main)"
+
+          # Guard against tagging a main that does not carry the bump, which
+          # would ship installers whose version disagrees with the tag.
+          ACTUAL="$(git show "${SHA}:VERSION")"
+          if [ "$ACTUAL" != "$VERSION" ]; then
+            echo "::error::main VERSION is '$ACTUAL', expected '$VERSION' — refusing to tag."
+            exit 1
+          fi
+
+          git tag -a "v${VERSION}" -m "Release v${VERSION}" "$SHA"
           git push origin "v${VERSION}"
 
   # =============================================================================
@@ -244,7 +286,11 @@ jobs:
   publish:
     name: Publish Release
     needs: [analyze, version-bump]
-    if: always() && needs.analyze.outputs.should_release == 'true' && (needs.version-bump.result == 'success' || needs.version-bump.result == 'skipped')
+    # version-bump must have actually succeeded. It owns tag creation, so
+    # publishing without it would let action-gh-release create the tag itself
+    # against an un-bumped main -- installers whose internal version disagrees
+    # with the tag they ship under.
+    if: needs.analyze.outputs.should_release == 'true' && needs.version-bump.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: write
