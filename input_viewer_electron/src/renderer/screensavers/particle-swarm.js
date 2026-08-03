@@ -6,7 +6,7 @@
  * fullscreen sim pass, then drawn as additive points (the point's vertex
  * shader fetches its position from the state texture by gl_VertexID).
  */
-import { createGLRuntime, createFullscreenPass, createPingPong, buildProgram } from './gl-base.js'
+import { createGLRuntime, createFullscreenPass, createPingPong, buildProgram, pointScale } from './gl-base.js'
 
 const PARTICLES_SIDE = 256 // 256x256 = 65,536 particles
 
@@ -49,6 +49,7 @@ const DRAW_VERT = `#version 300 es
 precision highp float;
 uniform sampler2D uState;
 uniform float uSide;
+uniform float uScale;
 out float vSpeed;
 void main() {
   int id = gl_VertexID;
@@ -58,7 +59,7 @@ void main() {
   vec4 s = texture(uState, uv);
   vSpeed = length(s.zw);
   gl_Position = vec4(s.xy, 0.0, 1.0);
-  gl_PointSize = 1.5;
+  gl_PointSize = 1.5 * uScale;
 }`
 
 const DRAW_FRAG = `#version 300 es
@@ -142,6 +143,7 @@ export default {
           gl.bindTexture(gl.TEXTURE_2D, pp.read.tex)
           gl.uniform1i(gl.getUniformLocation(drawProg.program, 'uState'), 0)
           gl.uniform1f(gl.getUniformLocation(drawProg.program, 'uSide'), SIDE)
+          gl.uniform1f(gl.getUniformLocation(drawProg.program, 'uScale'), pointScale(canvas, 1.5))
           gl.drawArrays(gl.POINTS, 0, COUNT)
         })
       },
