@@ -1,0 +1,37 @@
+# Dependabot keeps the bundled Chromium runtime patched.
+#
+# Input Viewer is an Electron app, so `electron` in input_viewer_electron/
+# ships a full Chromium runtime on the videowall PC. That host is patched by
+# win_updates + `winget upgrade` (labs-windows-mgmt), neither of which can see
+# a runtime bundled inside this app — so Chromium security fixes only reach the
+# videowall when Input Viewer is rebuilt with a newer Electron. Dependabot is
+# what now prompts that rebuild. See LABS-832.
+version: 2
+updates:
+  # The Electron application (bundled Chromium runtime lives here).
+  - package-ecosystem: "npm"
+    directory: "/input_viewer_electron"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "security"
+    groups:
+      # Keep the Electron toolchain versions coherent in one PR.
+      electron:
+        patterns:
+          - "electron"
+          - "electron-*"
+      build-tooling:
+        patterns:
+          - "vite"
+          - "electron-vite"
+
+  # Keep the CI/release GitHub Actions current.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
