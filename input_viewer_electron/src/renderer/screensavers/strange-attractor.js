@@ -131,7 +131,7 @@ export default {
           gl.uniform1i(gl.getUniformLocation(drawProg.program, 'uState'), 0)
           gl.uniform1f(gl.getUniformLocation(drawProg.program, 'uSide'), SIDE)
           gl.uniform1f(gl.getUniformLocation(drawProg.program, 'uTime'), time)
-          gl.uniform1f(gl.getUniformLocation(drawProg.program, 'uScale'), pointScale(canvas))
+          gl.uniform1f(gl.getUniformLocation(drawProg.program, 'uScale'), pointScale(canvas, 1.0))
           gl.drawArrays(gl.POINTS, 0, COUNT)
         })
       },

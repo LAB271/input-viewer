@@ -314,29 +314,48 @@ export function buildProgram(gl, vsSrc, fsSrc) {
   return { program, destroy() { gl.deleteProgram(program) } }
 }
 
+// Point sizes below this many device pixels are effectively invisible on a
+// large, distant display. The videowall is 10m x 2m at 6000x1200, so one pixel
+// is 1.67mm; viewed from 8m or more, a 1-2px dot subtends under ~1.3 arcmin,
+// around the resolving limit of 20/20 vision. 4px gives ~2.9 arcmin at 8m,
+// which reads as a distinct dot rather than a shimmer.
+//
+// Only applied on large canvases (see pointScale) so desk monitors, where 4px
+// would look like clumsy blobs, are unaffected.
+const MIN_LARGE_DISPLAY_POINT_PX = 4
+
 /**
  * Point-size scale factor for GL_POINTS screensavers.
  *
- * gl_PointSize is in device pixels, so a hardcoded value shrinks in apparent
- * size as resolution grows. On the 6000x1200 videowall a 1px point is roughly
- * 1mm of screen, which at viewing distance falls below the resolving limit of
- * normal vision -- the particle is not small, it is invisible.
+ * gl_PointSize is in device pixels, so a hardcoded value covers the same pixel
+ * count no matter how large the display is -- and thus shrinks in *angular*
+ * size as the viewer moves further away.
  *
- * Scales by the square root of pixel *area* relative to 1080p. Area is the
- * right metric rather than either axis alone: the wall is 6000x1200, so its
- * short axis (1200) is barely above 1080p and would yield only ~1.1x, while
- * its area is 3.5x of 1080p and yields ~1.9x. Using sqrt keeps the point's
- * share of the screen constant instead of its raw pixel count.
+ * Scales by the square root of pixel area relative to 1080p. Area is the right
+ * metric rather than either axis alone: the wall is 6000x1200, so its short
+ * axis (1200) is barely above 1080p and an axis-based rule yields only ~1.1x,
+ * while its area is 3.5x of 1080p and yields ~1.86x.
  *
- * Floored at 1.0 so desk monitors below 1080p are unchanged, and capped at 4
- * so very large canvases do not produce blobs or tank fill rate.
+ * The area multiplier alone is not enough for the smallest points: it takes
+ * the 1.0px attractor to 1.9px, still only ~1.3 arcmin at 8m. So on large
+ * canvases the result is also floored to MIN_LARGE_DISPLAY_POINT_PX, given the
+ * caller's base size, which is why basePx is required.
  *
  * @param {HTMLCanvasElement} canvas
- * @returns {number} multiplier in [1, 4]
+ * @param {number} basePx the shader's hardcoded gl_PointSize
+ * @returns {number} multiplier to apply to basePx
  */
-export function pointScale(canvas) {
-  const area = (canvas.width || 1) * (canvas.height || 1)
-  return Math.min(4, Math.max(1, Math.sqrt(area / (1920 * 1080))))
+export function pointScale(canvas, basePx) {
+  const w = canvas.width || 1
+  const h = canvas.height || 1
+  const scale = Math.min(4, Math.max(1, Math.sqrt((w * h) / (1920 * 1080))))
+
+  // Treat anything meaningfully larger than 1080p as a big-room display.
+  const isLargeDisplay = w * h > 1920 * 1080 * 1.5
+  if (!isLargeDisplay) return scale
+
+  const floorMult = MIN_LARGE_DISPLAY_POINT_PX / basePx
+  return Math.max(scale, Math.min(floorMult, 4))
 }
 
 /**
