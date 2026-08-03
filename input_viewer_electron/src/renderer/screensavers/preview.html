@@ -9,6 +9,27 @@
     html, body { width: 100%; height: 100%; background: #000; overflow: hidden; }
     #stage { position: fixed; inset: 0; }
     #screensaver-canvas { width: 100%; height: 100%; display: block; }
+
+    /* Videowall emulation: the canvas keeps its real target resolution (e.g.
+       6000x1200) as its backing-store size, and is scaled down purely for
+       display. Screensavers therefore see the true pixel dimensions and
+       aspect ratio, which is what we are trying to test. */
+    body.wall #stage {
+      inset: auto; top: 50%; left: 50%;
+      transform: translate(-50%, -50%) scale(var(--wall-scale));
+      transform-origin: center center;
+      width: var(--wall-w); height: var(--wall-h);
+      outline: 1px solid #0066ff;
+    }
+    body.wall #screensaver-canvas { width: var(--wall-w); height: var(--wall-h); }
+
+    /* Simulates ambient light washing out a projector screen. Overlaying grey
+       raises the black floor the way stray light does, so particles that are
+       invisible on the real wall are also invisible here. */
+    #washout {
+      position: fixed; inset: 0; z-index: 5; pointer-events: none;
+      background: #808080; opacity: 0; mix-blend-mode: screen;
+    }
     #hud {
       position: fixed; top: 16px; left: 16px; z-index: 10;
       font-family: monospace; color: #fff; background: rgba(0,0,0,0.55);
@@ -27,18 +48,24 @@
     #fps { position: fixed; top: 16px; right: 16px; z-index: 10;
       font-family: monospace; color: #6bff95; background: rgba(0,0,0,0.55);
       padding: 6px 10px; border-radius: 6px; font-size: 12px; }
+    #mode { position: fixed; bottom: 16px; right: 16px; z-index: 10;
+      font-family: monospace; color: #ffd166; background: rgba(0,0,0,0.55);
+      padding: 6px 10px; border-radius: 6px; font-size: 12px; }
   </style>
 </head>
 <body>
   <div id="stage">
     <canvas id="screensaver-canvas"></canvas>
   </div>
+  <div id="washout"></div>
   <div id="hud">
     <h1>SCREENSAVER PREVIEW</h1>
     <div class="list" id="list"></div>
-    <div class="keys">←/→ cycle · R restart · H hide HUD · F fullscreen</div>
+    <div class="keys">←/→ cycle · R restart · H hide HUD · F fullscreen<br>
+      W videowall 6000×1200 · L washout (ambient light)</div>
   </div>
   <div id="fps">– fps</div>
+  <div id="mode">–</div>
   <script type="module" src="./preview.js"></script>
 </body>
 </html>
