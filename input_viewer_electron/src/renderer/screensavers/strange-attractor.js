@@ -10,7 +10,7 @@
  *   x' = sin(a*y) + c*cos(a*x)
  *   y' = sin(b*x) + d*cos(b*y)
  */
-import { createGLRuntime, createFullscreenPass, createPingPong, buildProgram } from './gl-base.js'
+import { createGLRuntime, createFullscreenPass, createPingPong, buildProgram, pointScale } from './gl-base.js'
 
 const SIDE = 256 // 65,536 points
 
@@ -35,6 +35,7 @@ const DRAW_VERT = `#version 300 es
 precision highp float;
 uniform sampler2D uState;
 uniform float uSide;
+uniform float uScale;
 out float vIdx;
 void main() {
   int id = gl_VertexID;
@@ -44,7 +45,7 @@ void main() {
   vec2 p = texture(uState, uv).xy;
   // Clifford output is within roughly [-3,3]; scale to clip space.
   gl_Position = vec4(p / 3.0, 0.0, 1.0);
-  gl_PointSize = 1.0;
+  gl_PointSize = 1.0 * uScale;
   vIdx = float(id) / (uSide * uSide);
 }`
 
@@ -130,6 +131,7 @@ export default {
           gl.uniform1i(gl.getUniformLocation(drawProg.program, 'uState'), 0)
           gl.uniform1f(gl.getUniformLocation(drawProg.program, 'uSide'), SIDE)
           gl.uniform1f(gl.getUniformLocation(drawProg.program, 'uTime'), time)
+          gl.uniform1f(gl.getUniformLocation(drawProg.program, 'uScale'), pointScale(canvas))
           gl.drawArrays(gl.POINTS, 0, COUNT)
         })
       },

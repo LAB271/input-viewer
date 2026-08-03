@@ -9,7 +9,7 @@
  * Flock size is kept modest (a few thousand) because each boid samples many
  * others per frame; that is plenty for a convincing screensaver.
  */
-import { createGLRuntime, createFullscreenPass, createPingPong, buildProgram } from './gl-base.js'
+import { createGLRuntime, createFullscreenPass, createPingPong, buildProgram, pointScale } from './gl-base.js'
 
 const SIDE = 64 // 64x64 = 4096 boids
 const SAMPLES = 32 // neighbors sampled per boid per frame
@@ -83,6 +83,7 @@ const DRAW_VERT = `#version 300 es
 precision highp float;
 uniform sampler2D uState;
 uniform float uSide;
+uniform float uScale;
 out float vDir;
 void main() {
   int id = gl_VertexID;
@@ -92,7 +93,7 @@ void main() {
   vec4 s = texture(uState, uv);
   vDir = atan(s.w, s.z);
   gl_Position = vec4(s.xy, 0.0, 1.0);
-  gl_PointSize = 2.5;
+  gl_PointSize = 2.5 * uScale;
 }`
 
 const DRAW_FRAG = `#version 300 es
@@ -175,6 +176,7 @@ export default {
           gl.bindTexture(gl.TEXTURE_2D, pp.read.tex)
           gl.uniform1i(gl.getUniformLocation(drawProg.program, 'uState'), 0)
           gl.uniform1f(gl.getUniformLocation(drawProg.program, 'uSide'), SIDE)
+          gl.uniform1f(gl.getUniformLocation(drawProg.program, 'uScale'), pointScale(canvas))
           gl.drawArrays(gl.POINTS, 0, COUNT)
         })
       },

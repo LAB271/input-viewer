@@ -315,6 +315,31 @@ export function buildProgram(gl, vsSrc, fsSrc) {
 }
 
 /**
+ * Point-size scale factor for GL_POINTS screensavers.
+ *
+ * gl_PointSize is in device pixels, so a hardcoded value shrinks in apparent
+ * size as resolution grows. On the 6000x1200 videowall a 1px point is roughly
+ * 1mm of screen, which at viewing distance falls below the resolving limit of
+ * normal vision -- the particle is not small, it is invisible.
+ *
+ * Scales by the square root of pixel *area* relative to 1080p. Area is the
+ * right metric rather than either axis alone: the wall is 6000x1200, so its
+ * short axis (1200) is barely above 1080p and would yield only ~1.1x, while
+ * its area is 3.5x of 1080p and yields ~1.9x. Using sqrt keeps the point's
+ * share of the screen constant instead of its raw pixel count.
+ *
+ * Floored at 1.0 so desk monitors below 1080p are unchanged, and capped at 4
+ * so very large canvases do not produce blobs or tank fill rate.
+ *
+ * @param {HTMLCanvasElement} canvas
+ * @returns {number} multiplier in [1, 4]
+ */
+export function pointScale(canvas) {
+  const area = (canvas.width || 1) * (canvas.height || 1)
+  return Math.min(4, Math.max(1, Math.sqrt(area / (1920 * 1080))))
+}
+
+/**
  * Ping-pong pair of float targets for iterative simulations.
  * @param {WebGL2RenderingContext} gl
  * @param {number} w
