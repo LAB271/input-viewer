@@ -20,6 +20,9 @@ node_modules/
 input_viewer_electron/dist/
 input_viewer_electron/out/
 
+# Test reports (CI writes these; useful locally too)
+input_viewer_electron/junit.xml
+
 # OS
 .DS_Store
 

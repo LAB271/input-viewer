@@ -38,10 +38,23 @@ jobs:
       - name: Add test runner
         run: npm install --no-save vitest@^4
 
+      # The github-actions reporter annotates failures inline on the diff, so a
+      # red run points at the failing line instead of needing a log dig. The
+      # junit file backs the summary step below.
       - name: Unit tests
-        run: npm test
+        run: npm test -- --reporter=default --reporter=github-actions --reporter=junit --outputFile=junit.xml
 
-      - name: Check code style
+      # Runs even on failure: the counts are most useful when something broke.
+      # A jsdom worker that cannot start reports as an unhandled error rather
+      # than a failing test, and that is exactly the case this makes visible.
+      - name: Test summary
+        if: always()
+        run: node scripts/test-summary.mjs junit.xml >> "$GITHUB_STEP_SUMMARY"
+
+      # No linter is configured yet, so --if-present makes this a no-op. Kept
+      # so it starts working the moment a "lint" script is added; a green tick
+      # here does not currently mean code style was checked.
+      - name: Check code style (no-op until a linter is added)
         run: npm run lint --if-present
 
       - name: Build app

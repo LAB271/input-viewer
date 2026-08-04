@@ -95,7 +95,7 @@ jobs:
   # Lint and test (required for status check before pushing version bump)
   # =============================================================================
   lint:
-    name: Lint
+    name: Lint, test & build
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -103,6 +103,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
 
+      # Keep this in step with ci.yml: Node 20 is what constrains jsdom to
+      # 29.x (jsdom 30 needs Node >=22.22.2 and its bundled undici calls
+      # webidl.util.markAsUncloneable, absent on 20, so the jsdom test workers
+      # fail to start). Raise both workflows together.
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -113,7 +117,23 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Check code style
+      # vitest is installed transiently so the committed package-lock.json
+      # stays in sync for the `npm ci` this workflow relies on.
+      - name: Add test runner
+        run: npm install --no-save vitest@^4
+
+      # version-bump needs this job, so a failing test blocks the tag and
+      # publish rather than only failing a PR.
+      - name: Unit tests
+        run: npm test -- --reporter=default --reporter=github-actions --reporter=junit --outputFile=junit.xml
+
+      - name: Test summary
+        if: always()
+        run: node scripts/test-summary.mjs junit.xml >> "$GITHUB_STEP_SUMMARY"
+
+      # No linter is configured yet, so --if-present makes this a no-op. Kept
+      # so it starts working the moment a "lint" script is added.
+      - name: Check code style (no-op until a linter is added)
         run: npm run lint --if-present
 
       - name: Build app
