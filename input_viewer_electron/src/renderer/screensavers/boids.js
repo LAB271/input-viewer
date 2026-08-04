@@ -9,9 +9,17 @@
  * Flock size is kept modest (a few thousand) because each boid samples many
  * others per frame; that is plenty for a convincing screensaver.
  */
-import { createGLRuntime, createFullscreenPass, createPingPong, buildProgram, pointScale } from './gl-base.js'
+import { createGLRuntime, createFullscreenPass, createPingPong, buildProgram, pointScale, particleSide } from './gl-base.js'
 
 const SIDE = 64 // 64x64 = 4096 boids
+// Scales up with canvas area; capped to bound worst-case GPU cost, so very
+// large displays go slightly sparser rather than very expensive.
+//
+// The cap is much lower than the plain particle screensavers' (384) because
+// each boid samples SAMPLES neighbours per frame, making cost COUNT * SAMPLES
+// rather than COUNT. At 128 the wall runs ~14k boids => ~0.46M neighbour
+// tests/frame, against ~0.13M at 1080p; uncapped it would be ~0.90M.
+const MAX_SIDE = 128
 const SAMPLES = 32 // neighbors sampled per boid per frame
 
 const SIM_FRAG = `#version 300 es
@@ -119,7 +127,10 @@ export default {
     let runtime = null, gl = null
     let sim = null, fade = null, drawProg = null, pp = null, vao = null
     let last = 0, frame = 0
-    const COUNT = SIDE * SIDE
+    // Resolved in start(), once createGLRuntime has sized the canvas: the
+    // particle count scales with canvas area, so it cannot be known here.
+    let side = SIDE
+    let COUNT = side * side
 
     function seed() {
       const data = new Float32Array(COUNT * 4)
@@ -138,7 +149,11 @@ export default {
         runtime = createGLRuntime(canvas)
         gl = runtime.gl
         gl.getExtension('EXT_color_buffer_float')
-        pp = createPingPong(gl, SIDE, SIDE, seed())
+        // createGLRuntime has now sized the canvas, so area-based scaling is
+        // valid. Must precede seed(), which allocates COUNT particles.
+        side = particleSide(canvas, SIDE, MAX_SIDE)
+        COUNT = side * side
+        pp = createPingPong(gl, side, side, seed())
         sim = createFullscreenPass(gl, SIM_FRAG)
         fade = createFullscreenPass(gl, FADE_FRAG)
         drawProg = buildProgram(gl, DRAW_VERT, DRAW_FRAG)
@@ -152,13 +167,13 @@ export default {
           // Sim pass.
           gl.disable(gl.BLEND)
           gl.bindFramebuffer(gl.FRAMEBUFFER, pp.write.fbo)
-          gl.viewport(0, 0, SIDE, SIDE)
+          gl.viewport(0, 0, side, side)
           sim.draw((g, p) => {
             g.activeTexture(g.TEXTURE0)
             g.bindTexture(g.TEXTURE_2D, pp.read.tex)
             g.uniform1i(g.getUniformLocation(p, 'uState'), 0)
-            g.uniform2f(g.getUniformLocation(p, 'uTexel'), 1 / SIDE, 1 / SIDE)
-            g.uniform1f(g.getUniformLocation(p, 'uSide'), SIDE)
+            g.uniform2f(g.getUniformLocation(p, 'uTexel'), 1 / side, 1 / side)
+            g.uniform1f(g.getUniformLocation(p, 'uSide'), side)
             g.uniform1f(g.getUniformLocation(p, 'uDt'), dt)
             g.uniform1f(g.getUniformLocation(p, 'uFrame'), frame)
           })
@@ -175,7 +190,7 @@ export default {
           gl.activeTexture(gl.TEXTURE0)
           gl.bindTexture(gl.TEXTURE_2D, pp.read.tex)
           gl.uniform1i(gl.getUniformLocation(drawProg.program, 'uState'), 0)
-          gl.uniform1f(gl.getUniformLocation(drawProg.program, 'uSide'), SIDE)
+          gl.uniform1f(gl.getUniformLocation(drawProg.program, 'uSide'), side)
           gl.uniform1f(gl.getUniformLocation(drawProg.program, 'uScale'), pointScale(canvas, 2.5))
           gl.drawArrays(gl.POINTS, 0, COUNT)
         })

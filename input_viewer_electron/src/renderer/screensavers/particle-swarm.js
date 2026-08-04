@@ -6,9 +6,12 @@
  * fullscreen sim pass, then drawn as additive points (the point's vertex
  * shader fetches its position from the state texture by gl_VertexID).
  */
-import { createGLRuntime, createFullscreenPass, createPingPong, buildProgram, pointScale } from './gl-base.js'
+import { createGLRuntime, createFullscreenPass, createPingPong, buildProgram, pointScale, particleSide } from './gl-base.js'
 
 const PARTICLES_SIDE = 256 // 256x256 = 65,536 particles
+// Scales up with canvas area; capped to bound worst-case GPU cost,
+// so very large displays go slightly sparser rather than very expensive.
+const MAX_SIDE = 384
 
 const SIM_FRAG = `#version 300 es
 precision highp float;
@@ -81,8 +84,10 @@ export default {
     let runtime = null, gl = null
     let sim = null, drawProg = null, pp = null, vao = null
     let last = 0
-    const SIDE = PARTICLES_SIDE
-    const COUNT = SIDE * SIDE
+    // Resolved in start(), once createGLRuntime has sized the canvas: the
+    // particle count scales with canvas area, so it cannot be known here.
+    let SIDE = PARTICLES_SIDE
+    let COUNT = SIDE * SIDE
 
     function seed() {
       const data = new Float32Array(COUNT * 4)
@@ -100,6 +105,10 @@ export default {
         runtime = createGLRuntime(canvas)
         gl = runtime.gl
         gl.getExtension('EXT_color_buffer_float')
+        // createGLRuntime has now sized the canvas, so area-based scaling is
+        // valid. Must precede seed(), which allocates COUNT particles.
+        SIDE = particleSide(canvas, PARTICLES_SIDE, MAX_SIDE)
+        COUNT = SIDE * SIDE
         pp = createPingPong(gl, SIDE, SIDE, seed())
         sim = createFullscreenPass(gl, SIM_FRAG)
 
