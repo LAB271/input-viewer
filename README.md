@@ -10,10 +10,15 @@ A lightweight video input viewer — **OBS without the complexity**. View and ma
 
 Download the latest release for your platform:
 
-- **macOS**: [Input Viewer.dmg](https://github.com/LAB271/input-viewer-releases/releases/latest)
-- **Windows**: [Input Viewer Setup.exe](https://github.com/LAB271/input-viewer-releases/releases/latest)
+- **macOS**: [Input Viewer.dmg](https://github.com/LAB271/labs-input-viewer/releases/latest)
+- **Windows**: [Input Viewer Setup.exe](https://github.com/LAB271/labs-input-viewer/releases/latest)
 
 The app includes auto-updates and will notify you when new versions are available.
+
+> **Note:** Releases live in **this** repository. The separate
+> `LAB271/input-viewer-releases` repo is retired — it stopped receiving
+> builds at v2.5.2 and is no longer authoritative. The in-app auto-updater
+> also points here, so downloads and updates come from the same place.
 
 ## Features
 

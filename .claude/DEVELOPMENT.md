@@ -186,7 +186,7 @@ gh pr create --title "feat: add new feature" --body "## Summary
 5. Creates and pushes tag `v*.*.*`
 6. **Build and Release workflow** triggers on new tag
 7. Builds macOS and Windows packages
-8. Publishes to both repos (source + releases)
+8. Publishes to this repo's GitHub Releases
 
 ### Release Flow Diagram
 
@@ -217,7 +217,6 @@ Build & Release Workflow
         ↓
 Publish to GitHub Releases
 - LAB271/labs-input-viewer
-- LAB271/input-viewer-releases
 ```
 
 ---
