@@ -83,10 +83,20 @@ longer a separate `input-viewer-releases` repo.
 Each release publishes the installers **plus** the electron-updater
 metadata required for updates to work:
 
-- macOS: `Input.Viewer-<version>-universal.dmg`, the universal
-  `...-mac.zip` (the zip is what electron-updater actually applies), and
-  `latest-mac.yml`
+- macOS: `Input-Viewer-<version>-universal.dmg`, the universal
+  `Input-Viewer-<version>-universal.zip` (the zip is what
+  electron-updater actually applies), and `latest-mac.yml`
 - Windows: `Input-Viewer-Setup-<version>.exe` and `latest.yml`
+
+Both `mac` and `nsis` define an explicit `artifactName`. This is
+required, not cosmetic: without it electron-builder names the output
+files from the raw `productName` (`Input Viewer` → `Input.Viewer-...`)
+while writing the sanitized name (`Input-Viewer-...`) into
+`latest-mac.yml`. The two disagree and every macOS auto-update 404s —
+see issue #86. If you change `productName` or these `artifactName`
+templates, re-run `npx electron-builder --mac --publish never` and
+confirm the `url`/`path` values in `dist/latest-mac.yml` match the
+filenames actually emitted in `dist/`.
 
 ## CI/CD Flow
 
