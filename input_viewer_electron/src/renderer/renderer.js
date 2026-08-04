@@ -1772,5 +1772,30 @@ async function init() {
   console.log('Input Viewer ready')
 }
 
-// Start the app
-init()
+// Start the app.
+//
+// Guarded so the module can be imported for unit tests without booting the
+// whole app (device enumeration, streams, detection, screensavers). Nothing
+// sets this flag in production, so the app starts exactly as before; the test
+// harness sets it before importing.
+if (!globalThis.__INPUT_VIEWER_NO_AUTOSTART__) {
+  init()
+}
+
+// Exported for unit tests only. These are the state-transition functions the
+// keyboard shortcuts and dropdown drive; production code calls them directly
+// within this module.
+export {
+  state,
+  elements,
+  setLayout,
+  selectInput,
+  toggleFreeze,
+  getInputName,
+  isInputEnabled,
+  setInputName,
+  toggleInputEnabled,
+  getDefaultSettings,
+  setCenterGap,
+  setBorderWidth
+}
