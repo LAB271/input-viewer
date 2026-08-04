@@ -58,6 +58,18 @@ try {
 const rootTag = xml.match(/<testsuites\b[^>]*>/)?.[0] ?? ''
 const suiteTags = [...xml.matchAll(/<testsuite\b[^>]*>/g)].map(m => m[0])
 
+// An unparseable or truncated report must not render as a tidy "0/0 passed" --
+// that reads as success when nothing actually ran. Report it as unknown and let
+// the test step's exit code stand.
+if (!rootTag) {
+  console.log('### Test results')
+  console.log()
+  console.log(`Could not parse \`${file}\` — no \`<testsuites>\` element found.`)
+  console.log('The report may be truncated, which usually means the run was interrupted.')
+  console.log('Check the "Unit tests" step output.')
+  process.exit(0)
+}
+
 const total = num(rootTag, 'tests')
 const failures = num(rootTag, 'failures')
 const errors = num(rootTag, 'errors')
@@ -66,10 +78,17 @@ const ok = failures === 0 && errors === 0
 
 console.log('### Test results')
 console.log()
-console.log(`${ok ? '✅' : '❌'} **${passed}/${total} passed**` +
-  (failures ? ` · ${failures} failed` : '') +
-  (errors ? ` · ${errors} errors` : '') +
-  ` · ${suiteTags.length} files`)
+if (total === 0) {
+  // Zero collected tests is a problem, not a pass -- a broken include glob or a
+  // suite that never loaded. vitest itself exits 1 here; don't contradict it.
+  console.log('⚠️ **No tests ran.** The report contains zero test cases —')
+  console.log('likely a broken test glob or a suite that failed to load.')
+} else {
+  console.log(`${ok ? '✅' : '❌'} **${passed}/${total} passed**` +
+    (failures ? ` · ${failures} failed` : '') +
+    (errors ? ` · ${errors} errors` : '') +
+    ` · ${suiteTags.length} files`)
+}
 console.log()
 
 if (suiteTags.length) {
