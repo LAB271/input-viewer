@@ -81,7 +81,8 @@ Settings are stored in the app's user data directory:
 
 ### Prerequisites
 
-- Node.js 20+
+- Node.js 24+ (the active LTS, and what CI builds on; Electron and the test
+  tooling both require newer than 20)
 - npm
 
 ### Setup
