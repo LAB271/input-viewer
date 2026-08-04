@@ -6,9 +6,12 @@
  * twinkle, leaving soft trails. Calm and minimal (contrast to the colorful
  * Particle Swarm).
  */
-import { createGLRuntime, createFullscreenPass, createPingPong, buildProgram } from './gl-base.js'
+import { createGLRuntime, createFullscreenPass, createPingPong, buildProgram, pointScale, particleSide } from './gl-base.js'
 
-const SIDE = 256 // 65,536 particles
+const SIDE = 256 // 65,536 particles at 1080p
+// Scales up with canvas area; capped so the wall costs ~147k particles
+// rather than the ~227k that holding 1080p density exactly would need.
+const MAX_SIDE = 384
 
 const SIM_FRAG = `#version 300 es
 precision highp float;
@@ -58,6 +61,7 @@ precision highp float;
 uniform sampler2D uState;
 uniform float uSide;
 uniform float uTime;
+uniform float uScale;
 out float vAlpha;
 void main(){
   int id = gl_VertexID;
@@ -70,7 +74,9 @@ void main(){
   float lifeFade = smoothstep(0.0, 0.2, s.w) * smoothstep(1.3, 0.6, s.w);
   vAlpha = tw * lifeFade;
   gl_Position = vec4(s.xy, 0.0, 1.0);
-  gl_PointSize = 1.0 + 2.0 * tw;
+  // uScale multiplies the whole twinkle range, not just its floor, so the
+  // 1..3px pulse keeps its proportions when scaled up for a large display.
+  gl_PointSize = (1.0 + 2.0 * tw) * uScale;
 }`
 
 const DRAW_FRAG = `#version 300 es
@@ -96,11 +102,14 @@ export default {
     let runtime = null, gl = null
     let sim = null, fade = null, drawProg = null, pp = null, vao = null
     let last = 0
-    const COUNT = SIDE * SIDE
+    // Resolved in start(), once createGLRuntime has sized the canvas: the
+    // particle count scales with canvas area, so it cannot be known here.
+    let side = SIDE
+    let count = SIDE * SIDE
 
     function seed() {
-      const data = new Float32Array(COUNT * 4)
-      for (let i = 0; i < COUNT; i++) {
+      const data = new Float32Array(count * 4)
+      for (let i = 0; i < count; i++) {
         data[i * 4 + 0] = Math.random() * 2 - 1
         data[i * 4 + 1] = Math.random() * 2 - 1
         data[i * 4 + 2] = Math.random()           // phase
@@ -114,7 +123,11 @@ export default {
         runtime = createGLRuntime(canvas)
         gl = runtime.gl
         gl.getExtension('EXT_color_buffer_float')
-        pp = createPingPong(gl, SIDE, SIDE, seed())
+        // createGLRuntime has now sized the canvas, so area-based scaling is
+        // valid. Must precede seed(), which allocates count particles.
+        side = particleSide(canvas, SIDE, MAX_SIDE)
+        count = side * side
+        pp = createPingPong(gl, side, side, seed())
         sim = createFullscreenPass(gl, SIM_FRAG)
         fade = createFullscreenPass(gl, FADE_FRAG)
         drawProg = buildProgram(gl, DRAW_VERT, DRAW_FRAG)
@@ -127,12 +140,12 @@ export default {
 
           gl.disable(gl.BLEND)
           gl.bindFramebuffer(gl.FRAMEBUFFER, pp.write.fbo)
-          gl.viewport(0, 0, SIDE, SIDE)
+          gl.viewport(0, 0, side, side)
           sim.draw((g, p) => {
             g.activeTexture(g.TEXTURE0)
             g.bindTexture(g.TEXTURE_2D, pp.read.tex)
             g.uniform1i(g.getUniformLocation(p, 'uState'), 0)
-            g.uniform2f(g.getUniformLocation(p, 'uTexel'), 1 / SIDE, 1 / SIDE)
+            g.uniform2f(g.getUniformLocation(p, 'uTexel'), 1 / side, 1 / side)
             g.uniform1f(g.getUniformLocation(p, 'uTime'), time)
             g.uniform1f(g.getUniformLocation(p, 'uDt'), dt)
           })
@@ -150,9 +163,14 @@ export default {
           gl.activeTexture(gl.TEXTURE0)
           gl.bindTexture(gl.TEXTURE_2D, pp.read.tex)
           gl.uniform1i(gl.getUniformLocation(drawProg.program, 'uState'), 0)
-          gl.uniform1f(gl.getUniformLocation(drawProg.program, 'uSide'), SIDE)
+          gl.uniform1f(gl.getUniformLocation(drawProg.program, 'uSide'), side)
           gl.uniform1f(gl.getUniformLocation(drawProg.program, 'uTime'), time)
-          gl.drawArrays(gl.POINTS, 0, COUNT)
+          // Base size is the twinkle midpoint (1.0 + 2.0 * 0.5), the honest
+          // representative of a size that animates over 1..3px. Passing the
+          // 1.0 floor would overstate how small the points actually are and
+          // inflate the large-display floor multiplier.
+          gl.uniform1f(gl.getUniformLocation(drawProg.program, 'uScale'), pointScale(canvas, 2.0))
+          gl.drawArrays(gl.POINTS, 0, count)
         })
       },
       stop() {

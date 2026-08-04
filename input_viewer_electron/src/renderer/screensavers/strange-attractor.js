@@ -10,9 +10,12 @@
  *   x' = sin(a*y) + c*cos(a*x)
  *   y' = sin(b*x) + d*cos(b*y)
  */
-import { createGLRuntime, createFullscreenPass, createPingPong, buildProgram, pointScale } from './gl-base.js'
+import { createGLRuntime, createFullscreenPass, createPingPong, buildProgram, pointScale, particleSide } from './gl-base.js'
 
 const SIDE = 256 // 65,536 points
+// Scales up with canvas area; capped to bound worst-case GPU cost,
+// so very large displays go slightly sparser rather than very expensive.
+const MAX_SIDE = 384
 
 const SIM_FRAG = `#version 300 es
 precision highp float;
@@ -69,7 +72,10 @@ export default {
   create(canvas) {
     let runtime = null, gl = null
     let sim = null, fade = null, drawProg = null, pp = null, vao = null
-    const COUNT = SIDE * SIDE
+    // Resolved in start(), once createGLRuntime has sized the canvas: the
+    // particle count scales with canvas area, so it cannot be known here.
+    let side = SIDE
+    let COUNT = side * side
 
     function seed() {
       const data = new Float32Array(COUNT * 4)
@@ -86,7 +92,11 @@ export default {
         runtime = createGLRuntime(canvas)
         gl = runtime.gl
         gl.getExtension('EXT_color_buffer_float')
-        pp = createPingPong(gl, SIDE, SIDE, seed())
+        // createGLRuntime has now sized the canvas, so area-based scaling is
+        // valid. Must precede seed(), which allocates COUNT particles.
+        side = particleSide(canvas, SIDE, MAX_SIDE)
+        COUNT = side * side
+        pp = createPingPong(gl, side, side, seed())
         sim = createFullscreenPass(gl, SIM_FRAG)
         fade = createFullscreenPass(gl, FADE_FRAG)
         drawProg = buildProgram(gl, DRAW_VERT, DRAW_FRAG)
@@ -107,12 +117,12 @@ export default {
           // Advance the points.
           gl.disable(gl.BLEND)
           gl.bindFramebuffer(gl.FRAMEBUFFER, pp.write.fbo)
-          gl.viewport(0, 0, SIDE, SIDE)
+          gl.viewport(0, 0, side, side)
           sim.draw((g, p) => {
             g.activeTexture(g.TEXTURE0)
             g.bindTexture(g.TEXTURE_2D, pp.read.tex)
             g.uniform1i(g.getUniformLocation(p, 'uState'), 0)
-            g.uniform2f(g.getUniformLocation(p, 'uTexel'), 1 / SIDE, 1 / SIDE)
+            g.uniform2f(g.getUniformLocation(p, 'uTexel'), 1 / side, 1 / side)
             g.uniform4f(g.getUniformLocation(p, 'uParams'), a, b, c, d)
           })
           pp.swap()
@@ -129,7 +139,7 @@ export default {
           gl.activeTexture(gl.TEXTURE0)
           gl.bindTexture(gl.TEXTURE_2D, pp.read.tex)
           gl.uniform1i(gl.getUniformLocation(drawProg.program, 'uState'), 0)
-          gl.uniform1f(gl.getUniformLocation(drawProg.program, 'uSide'), SIDE)
+          gl.uniform1f(gl.getUniformLocation(drawProg.program, 'uSide'), side)
           gl.uniform1f(gl.getUniformLocation(drawProg.program, 'uTime'), time)
           gl.uniform1f(gl.getUniformLocation(drawProg.program, 'uScale'), pointScale(canvas, 1.0))
           gl.drawArrays(gl.POINTS, 0, COUNT)

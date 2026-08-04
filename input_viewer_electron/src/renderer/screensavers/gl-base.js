@@ -359,6 +359,43 @@ export function pointScale(canvas, basePx) {
 }
 
 /**
+ * Simulation-texture side length for particle counts, scaled to canvas area.
+ *
+ * Companion to pointScale: that fixes how *big* each particle is, this fixes
+ * how *many* there are. A hardcoded count spread over a larger canvas gets
+ * proportionally sparser -- the wall is 3.5x the pixel area of 1080p, so the
+ * same particles sit 3.5x further apart and the field reads as empty.
+ *
+ * Particles live in a SIDE x SIDE ping-pong texture, so count is SIDE^2 and
+ * cost grows quadratically. Scaling SIDE by sqrt(area ratio) therefore grows
+ * the *count* linearly with area, holding density constant.
+ *
+ * Two guards on cost:
+ *  - `cap` bounds SIDE outright, so very large canvases go sparser rather
+ *    than unboundedly expensive. On the wall this means ~1.5x sparser than
+ *    1080p instead of 3.5x -- a deliberate tradeoff, since holding density
+ *    exactly would need ~227k particles against the capped ~147k.
+ *  - SIDE is rounded to a multiple of 8, keeping textures friendly and
+ *    avoiding a reallocation for every few pixels of canvas change.
+ *
+ * Never scales *down*: below 1080p the base count is already tuned, and
+ * thinning a laptop preview would misrepresent what the wall shows.
+ *
+ * @param {HTMLCanvasElement} canvas
+ * @param {number} baseSide the screensaver's tuned SIDE at 1080p
+ * @param {number} cap maximum SIDE, bounding worst-case GPU cost
+ * @returns {number} SIDE to allocate
+ */
+export function particleSide(canvas, baseSide, cap) {
+  const w = canvas.width || 1
+  const h = canvas.height || 1
+  const ratio = (w * h) / (1920 * 1080)
+  if (ratio <= 1) return baseSide
+  const scaled = Math.round((baseSide * Math.sqrt(ratio)) / 8) * 8
+  return Math.min(cap, Math.max(baseSide, scaled))
+}
+
+/**
  * Ping-pong pair of float targets for iterative simulations.
  * @param {WebGL2RenderingContext} gl
  * @param {number} w
