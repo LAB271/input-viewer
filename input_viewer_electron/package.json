@@ -22,6 +22,8 @@
     "build": "npm run clean && electron-vite build",
     "start": "electron-vite preview",
     "test": "vitest run",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
     "build:mac": "npm run build && electron-builder --mac --config",
     "build:win": "npm run build && electron-builder --win --config",
     "build:unpack": "npm run build && electron-builder --dir --config",
@@ -31,9 +33,12 @@
     "electron-updater": "6.8.9"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "electron": "43.2.0",
     "electron-builder": "26.15.3",
     "electron-vite": "6.0.0-beta.1",
+    "eslint": "^10.8.0",
+    "globals": "^17.9.0",
     "jsdom": "^30.0.1",
     "vite": "8.2.0"
   },

@@ -427,7 +427,7 @@ async function startVideoStream(deviceId, videoElement, side) {
     let stream
     try {
       stream = await navigator.mediaDevices.getUserMedia(constraints)
-    } catch (audioError) {
+    } catch {
       // If audio fails (device doesn't support audio), try video only
       console.log(`[Video] Audio not available for device, falling back to video only`)
       const videoOnlyConstraints = {
@@ -539,13 +539,13 @@ function setupAudioForStream(stream, side) {
   if (side === 'left' && state.leftAudioSource) {
     try {
       state.leftAudioSource.disconnect()
-    } catch (e) {
+    } catch {
       // Ignore disconnect errors
     }
   } else if (side === 'right' && state.rightAudioSource) {
     try {
       state.rightAudioSource.disconnect()
-    } catch (e) {
+    } catch {
       // Ignore disconnect errors
     }
   }
@@ -663,7 +663,7 @@ function hideNoSignal(side) {
  */
 function updateDvdScreensaver() {
   // Determine which feeds are active based on layout mode
-  let allNoSignal = false
+  let allNoSignal
 
   if (state.layoutMode === 'dual') {
     // In dual mode, show DVD when both feeds have no signal
@@ -1650,13 +1650,6 @@ function getUniqueActiveDevices() {
   }
   
   return devices
-}
-
-/**
- * Stop the detection loop
- */
-function stopDetectionLoop() {
-  state.detectionRunning = false
 }
 
 // =============================================================================

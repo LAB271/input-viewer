@@ -166,9 +166,27 @@ Both workflows run the unit tests, so a failing test blocks a release as
 well as a PR. Failures are annotated inline on the diff, and each run gets
 a job summary with per-file counts (via `scripts/test-summary.mjs`).
 
-There is **no linter configured**: the "Check code style" step is
-`npm run lint --if-present` and currently a no-op, so a green tick there
-does not mean style was checked.
+## Linting
+
+`npm run lint` runs ESLint 10 with a flat config (`eslint.config.mjs`);
+`npm run lint:fix` applies the auto-fixable subset. Both workflows run it,
+so a lint error blocks a PR *and* a release.
+
+The config is deliberately **correctness-focused, not a formatter**. It
+starts from `js.configs.recommended` — unused/undefined identifiers, dead
+code, duplicate keys — plus `no-eval`/`no-new-func` and `eqeqeq` (with
+`null: 'ignore'`, since `== null` is idiomatic here). It does not enforce
+indentation, quotes or semicolons, so it neither churns the existing ~5,700
+lines nor fights the current hand-formatting. Keep it that way unless you
+also want to reformat the codebase.
+
+Three environments are configured separately, because they genuinely differ:
+
+| Path | Modules | Globals |
+|---|---|---|
+| `src/main`, `src/preload` | CommonJS | Node |
+| `src/renderer` | ESM | browser (DOM, canvas, WebGL2) |
+| `scripts`, `test` | ESM | Node (+ browser for the jsdom tests) |
 
 Trigger a release with `gh workflow run release.yml` (or via the Actions
 tab). The `release` skill also covers this.
