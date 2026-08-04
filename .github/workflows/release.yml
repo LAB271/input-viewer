@@ -103,14 +103,13 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
 
-      # Keep this in step with ci.yml: Node 20 is what constrains jsdom to
-      # 29.x (jsdom 30 needs Node >=22.22.2 and its bundled undici calls
-      # webidl.util.markAsUncloneable, absent on 20, so the jsdom test workers
-      # fail to start). Raise both workflows together.
+      # Node 24 is the active LTS; keep every node-version in this file and in
+      # ci.yml on the same major. Node 20 was EOL and below electron's own
+      # floor (>= 22.12.0), so `npm ci` warned EBADENGINE on electron.
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '20'
+          node-version: '24'
           cache: 'npm'
           cache-dependency-path: input_viewer_electron/package-lock.json
 
@@ -131,10 +130,10 @@ jobs:
         if: always()
         run: node scripts/test-summary.mjs junit.xml >> "$GITHUB_STEP_SUMMARY"
 
-      # No linter is configured yet, so --if-present makes this a no-op. Kept
-      # so it starts working the moment a "lint" script is added.
-      - name: Check code style (no-op until a linter is added)
-        run: npm run lint --if-present
+      # ESLint (flat config in eslint.config.mjs). version-bump needs this job,
+      # so a lint error blocks the tag and publish.
+      - name: Lint
+        run: npm run lint
 
       - name: Build app
         run: npm run build
@@ -156,7 +155,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '20'
+          node-version: '24'
           cache: 'npm'
           cache-dependency-path: input_viewer_electron/package-lock.json
 
@@ -199,7 +198,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '20'
+          node-version: '24'
           cache: 'npm'
           cache-dependency-path: input_viewer_electron/package-lock.json
 
@@ -239,7 +238,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '20'
+          node-version: '24'
 
       - name: Update VERSION and package.json
         run: |

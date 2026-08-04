@@ -15,28 +15,69 @@ input_viewer_electron/
 │       ├── index.html         # Main UI
 │       ├── renderer.js        # Core app logic
 │       ├── detection-simple.js # No-signal detection
-│       └── styles.css         # Styling
+│       ├── styles.css         # Styling
+│       └── screensavers/      # No-signal screensavers + WebGL helpers
+│           ├── registry.js    # Screensaver list and lifecycle
+│           ├── gl-base.js     # Shared GL runtime, pointScale/particleSide
+│           └── preview.html   # Standalone preview harness
+├── scripts/
+│   ├── screensaver-preview.mjs # `npm run screensaver` dev server
+│   └── test-summary.mjs       # Renders JUnit as a CI job summary
+├── test/                      # vitest suites (see Testing below)
 ├── build/                     # App icons and entitlements
 ├── package.json               # Dependencies and build config
-└── electron.vite.config.mjs   # Build configuration
+├── electron.vite.config.mjs   # App build configuration
+├── vite.preview.config.mjs    # Screensaver preview harness config
+└── vitest.config.mjs          # Test configuration
 ```
 
 ## Key Technologies
 
-- **Electron** v35+ with electron-vite
+- **Electron** 43.x with electron-vite (requires Node 24+)
 - **electron-updater** for auto-updates from GitHub releases
 - **WebRTC MediaDevices API** for video capture
 - **Canvas API** for frame capture and comparison
+- **WebGL2** for the screensavers
+- **vitest** (+ jsdom for the renderer tests) for unit tests
 
 ## Development Commands
 
 ```bash
 cd input_viewer_electron
 npm run dev          # Start dev server with hot reload
+npm test             # Run the unit tests
 npm run build        # Build for production
 npm run build:mac    # Build macOS DMG
 npm run build:win    # Build Windows installer
+
+# Preview a screensaver in a browser with a real WebGL2 context.
+# --wall emulates the 6000x1200 videowall; W toggles it, L cycles an
+# ambient-light washout overlay.
+npm run screensaver -- white-particles --wall
 ```
+
+## Testing
+
+`npm test` runs vitest. Note two deliberate quirks:
+
+- **`vitest` is not in `devDependencies`.** CI installs it with
+  `npm install --no-save vitest@^4` so the committed `package-lock.json`
+  stays in sync for the `npm ci` the release workflow relies on. A bare
+  `npm ci` therefore leaves `vitest: command not found` — that is expected.
+  `jsdom` *is* a real devDependency.
+- **Most suites are DOM-free** and run in the node environment. Only the
+  renderer tests need a DOM and they opt in per-file with
+  `// @vitest-environment jsdom`, keeping the fast path default.
+
+`renderer.js` builds its `elements` map at module load and calls `init()` at
+module scope, guarded by `globalThis.__INPUT_VIEWER_NO_AUTOSTART__` so tests
+can import it without booting the app. `test/helpers/renderer-dom.js` derives
+the required element ids from `renderer.js` source, so the fixture cannot
+silently drift.
+
+Node 24+ is required: Electron's own floor is `>= 22.12.0` and jsdom 30
+needs `^24.15.0`. Both workflows pin `node-version: '24'`; raise them
+together.
 
 ## Version Management
 
@@ -100,21 +141,52 @@ filenames actually emitted in `dist/`.
 
 ## CI/CD Flow
 
-CI runs on every PR/branch. Releasing is a **manual** step (the Release
-workflow is `workflow_dispatch`, not triggered automatically on merge):
+CI triggers on **PRs targeting `main`** and on pushes to `main` — not on
+every branch. A PR based on another branch (a stacked PR) gets **no checks
+at all**, so retarget it at `main` before relying on CI. Releasing is a
+**manual** step (the Release workflow is `workflow_dispatch`, not triggered
+automatically on merge):
 
 ```
-Feature Branch → PR → CI Tests → Merge to Main
+Feature Branch → PR (base: main) → CI: lint, test & build → Merge to Main
                                       │
         (manually) Run "Release" workflow ──┐
                                       ↓
                               Analyzes commits since last tag
                               Computes version bump (semver)
+                              Runs the test suite (gates the release:
+                                version-bump needs the lint job)
                               Builds macOS + Windows
                               Bumps VERSION + package.json, tags v*.*.*
                               Publishes installers + update metadata
                               to GitHub Releases on LAB271/labs-input-viewer
 ```
+
+Both workflows run the unit tests, so a failing test blocks a release as
+well as a PR. Failures are annotated inline on the diff, and each run gets
+a job summary with per-file counts (via `scripts/test-summary.mjs`).
+
+## Linting
+
+`npm run lint` runs ESLint 10 with a flat config (`eslint.config.mjs`);
+`npm run lint:fix` applies the auto-fixable subset. Both workflows run it,
+so a lint error blocks a PR *and* a release.
+
+The config is deliberately **correctness-focused, not a formatter**. It
+starts from `js.configs.recommended` — unused/undefined identifiers, dead
+code, duplicate keys — plus `no-eval`/`no-new-func` and `eqeqeq` (with
+`null: 'ignore'`, since `== null` is idiomatic here). It does not enforce
+indentation, quotes or semicolons, so it neither churns the existing ~5,700
+lines nor fights the current hand-formatting. Keep it that way unless you
+also want to reformat the codebase.
+
+Three environments are configured separately, because they genuinely differ:
+
+| Path | Modules | Globals |
+|---|---|---|
+| `src/main`, `src/preload` | CommonJS | Node |
+| `src/renderer` | ESM | browser (DOM, canvas, WebGL2) |
+| `scripts`, `test` | ESM | Node (+ browser for the jsdom tests) |
 
 Trigger a release with `gh workflow run release.yml` (or via the Actions
 tab). The `release` skill also covers this.

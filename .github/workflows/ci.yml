@@ -19,14 +19,14 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
 
-      # Node 20 constrains jsdom to 29.x: jsdom 30 requires Node >=22.22.2 and
-      # its bundled undici calls webidl.util.markAsUncloneable, which Node 20
-      # does not have, so the jsdom test workers fail to start. Raise this
-      # version first if you want to move jsdom to 30.
+      # Node 24 is the active LTS. Node 20 is EOL and was below electron's own
+      # floor (>= 22.12.0), which made `npm ci` emit EBADENGINE warnings for
+      # electron and its tooling; 24 clears those and unblocks jsdom 30.
+      # Keep this in step with release.yml.
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '20'
+          node-version: '24'
           cache: 'npm'
           cache-dependency-path: input_viewer_electron/package-lock.json
 
@@ -51,11 +51,11 @@ jobs:
         if: always()
         run: node scripts/test-summary.mjs junit.xml >> "$GITHUB_STEP_SUMMARY"
 
-      # No linter is configured yet, so --if-present makes this a no-op. Kept
-      # so it starts working the moment a "lint" script is added; a green tick
-      # here does not currently mean code style was checked.
-      - name: Check code style (no-op until a linter is added)
-        run: npm run lint --if-present
+      # ESLint (flat config in eslint.config.mjs). Correctness-focused, not a
+      # formatter -- it catches unused/undefined identifiers and eval-likes
+      # rather than restyling the codebase.
+      - name: Lint
+        run: npm run lint
 
       - name: Build app
         run: npm run build
