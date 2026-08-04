@@ -127,7 +127,7 @@ This project uses GitHub Actions for CI/CD. **Only the Electron app is built/tes
 
 - **Triggers:** Tag push (`v*.*.*`), manual `workflow_dispatch`
 - **Builds:** macOS DMG (universal), Windows NSIS installer
-- **Publishes to:** Source repo + `LAB271/input-viewer-releases`
+- **Publishes to:** This repo's GitHub Releases (`LAB271/labs-input-viewer`)
 - **Manual trigger:** Can specify tag or use latest
 
 ### Trigger Flow

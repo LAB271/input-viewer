@@ -217,7 +217,6 @@ Build & Release Workflow
         ↓
 Publish to GitHub Releases
 - LAB271/labs-input-viewer
-- LAB271/input-viewer-releases
 ```
 
 ---
