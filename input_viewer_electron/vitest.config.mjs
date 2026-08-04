@@ -8,6 +8,11 @@ import { defineConfig } from 'vite'
 export default defineConfig({
   test: {
     environment: 'node',
-    include: ['test/**/*.test.js']
+    include: ['test/**/*.test.js'],
+    // A jsdom worker that fails to boot reports as an unhandled error rather
+    // than a failing test, so the run would otherwise "pass" with those files
+    // silently skipped. Keep the default strict behaviour explicit: if an
+    // environment cannot start, the run must fail.
+    dangerouslyIgnoreUnhandledErrors: false
   }
 })
