@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: 2025-2026 Schuberg Philis / Lab271
 import { describe, it, expect } from 'vitest'
-import { pointScale, particleSide } from '../src/renderer/screensavers/gl-base.js'
+import {
+  pointScale, particleSide, luminanceScale, isLargeDisplay, isBigRoomDisplay,
+} from '../src/renderer/screensavers/gl-base.js'
 
 // Canvas stand-in: these helpers only read width/height.
 const canvas = (width, height) => ({ width, height })
@@ -88,5 +90,81 @@ describe('particleSide', () => {
 
   it('returns a usable side for a zero-sized canvas', () => {
     expect(particleSide(canvas(0, 0), 256, 384)).toBe(256)
+  })
+})
+
+describe('isLargeDisplay (drives size and count)', () => {
+  it('treats desk-sized displays as normal', () => {
+    expect(isLargeDisplay(LAPTOP)).toBe(false)
+    expect(isLargeDisplay(HD)).toBe(false)
+  })
+
+  it('includes 1440p, where slightly larger dots genuinely help', () => {
+    expect(isLargeDisplay(QHD)).toBe(true)
+  })
+
+  it('includes the wall and 4K', () => {
+    expect(isLargeDisplay(WALL)).toBe(true)
+    expect(isLargeDisplay(UHD)).toBe(true)
+  })
+
+  it('does not throw on a zero-sized canvas', () => {
+    expect(isLargeDisplay(canvas(0, 0))).toBe(false)
+  })
+})
+
+describe('isBigRoomDisplay (drives brightness)', () => {
+  it('is a strictly higher bar than isLargeDisplay', () => {
+    // Brightness is far more noticeable than point size, so it uses a higher
+    // threshold. Anything big-room is necessarily also "large".
+    for (const c of [LAPTOP, HD, QHD, UHD, WALL]) {
+      if (isBigRoomDisplay(c)) expect(isLargeDisplay(c)).toBe(true)
+    }
+  })
+
+  it('excludes 1440p, which has no washout problem to solve', () => {
+    // The key case: a 1440p monitor is "large" for sizing but must not get a
+    // brightness lift, or dim screensavers look wrong on a normal desk setup.
+    expect(isLargeDisplay(QHD)).toBe(true)
+    expect(isBigRoomDisplay(QHD)).toBe(false)
+  })
+
+  it('includes the wall and 4K', () => {
+    expect(isBigRoomDisplay(WALL)).toBe(true)
+    expect(isBigRoomDisplay(UHD)).toBe(true)
+  })
+})
+
+// Companion to pointScale (how big) and particleSide (how many): how bright.
+// Dim-on-black screensavers lose their contrast when ambient light lifts the
+// black floor on a projector screen -- see issue #88.
+describe('luminanceScale', () => {
+  it('leaves desk displays at 1x so nothing changes there', () => {
+    expect(luminanceScale(LAPTOP)).toBe(1)
+    expect(luminanceScale(HD)).toBe(1)
+    expect(luminanceScale(QHD)).toBe(1)
+  })
+
+  it('lifts luminance on the wall', () => {
+    expect(luminanceScale(WALL)).toBeGreaterThan(1)
+  })
+
+  it('agrees with isBigRoomDisplay', () => {
+    for (const c of [LAPTOP, HD, QHD, UHD, WALL, canvas(0, 0)]) {
+      expect(luminanceScale(c) > 1).toBe(isBigRoomDisplay(c))
+    }
+  })
+
+  it('stays within a sane range so colours cannot blow out', () => {
+    // Shaders clamp too, but a runaway multiplier here would wash the image
+    // to flat white rather than merely brighten it.
+    for (const c of [LAPTOP, HD, QHD, UHD, WALL, canvas(15360, 8640)]) {
+      expect(luminanceScale(c)).toBeGreaterThanOrEqual(1)
+      expect(luminanceScale(c)).toBeLessThanOrEqual(2)
+    }
+  })
+
+  it('does not throw on a zero-sized canvas', () => {
+    expect(Number.isFinite(luminanceScale(canvas(0, 0)))).toBe(true)
   })
 })

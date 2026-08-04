@@ -10,7 +10,7 @@
  *   x' = sin(a*y) + c*cos(a*x)
  *   y' = sin(b*x) + d*cos(b*y)
  */
-import { createGLRuntime, createFullscreenPass, createPingPong, buildProgram, pointScale, particleSide } from './gl-base.js'
+import { createGLRuntime, createFullscreenPass, createPingPong, buildProgram, pointScale, particleSide, luminanceScale } from './gl-base.js'
 
 const SIDE = 256 // 65,536 points
 // Scales up with canvas area; capped to bound worst-case GPU cost,
@@ -56,10 +56,16 @@ const DRAW_FRAG = `#version 300 es
 precision highp float;
 in float vIdx;
 uniform float uTime;
+uniform float uLum;
 out vec4 outColor;
 void main() {
   vec3 col = 0.5 + 0.5 * cos(6.2831 * (vIdx * 0.5 + uTime * 0.03 + vec3(0.0, 0.33, 0.67)));
-  outColor = vec4(col * 0.5, 0.12); // dim + additive accumulation
+  // Dim + additive accumulation: brightness comes from many overlapping points
+  // rather than any single one. uLum lifts it on big-room displays, where
+  // ambient light raises the black floor this effect depends on (see #88).
+  // Boosts the colour rather than the alpha, so the accumulation still builds
+  // up gradually instead of the points turning opaque.
+  outColor = vec4(min(col * 0.5 * uLum, vec3(1.0)), 0.12);
 }`
 
 const FADE_FRAG = `#version 300 es
@@ -142,6 +148,7 @@ export default {
           gl.uniform1f(gl.getUniformLocation(drawProg.program, 'uSide'), side)
           gl.uniform1f(gl.getUniformLocation(drawProg.program, 'uTime'), time)
           gl.uniform1f(gl.getUniformLocation(drawProg.program, 'uScale'), pointScale(canvas, 1.0))
+          gl.uniform1f(gl.getUniformLocation(drawProg.program, 'uLum'), luminanceScale(canvas))
           gl.drawArrays(gl.POINTS, 0, COUNT)
         })
       },

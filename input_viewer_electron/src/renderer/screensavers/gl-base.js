@@ -350,9 +350,7 @@ export function pointScale(canvas, basePx) {
   const h = canvas.height || 1
   const scale = Math.min(4, Math.max(1, Math.sqrt((w * h) / (1920 * 1080))))
 
-  // Treat anything meaningfully larger than 1080p as a big-room display.
-  const isLargeDisplay = w * h > 1920 * 1080 * 1.5
-  if (!isLargeDisplay) return scale
+  if (!isLargeDisplay(canvas)) return scale
 
   const floorMult = MIN_LARGE_DISPLAY_POINT_PX / basePx
   return Math.max(scale, Math.min(floorMult, 4))
@@ -393,6 +391,78 @@ export function particleSide(canvas, baseSide, cap) {
   if (ratio <= 1) return baseSide
   const scaled = Math.round((baseSide * Math.sqrt(ratio)) / 8) * 8
   return Math.min(cap, Math.max(baseSide, scaled))
+}
+
+// How much to lift luminance on a big-room display, and the washout level it
+// is sized for.
+//
+// The videowall is a projector screen, so stray room light adds a roughly
+// uniform white floor. At the ~12% washout the preview harness emulates (L
+// key), a particle written at luminance L has Weber contrast
+// (L - 0.12) / 0.12 against that floor rather than L / 0.02 against black.
+// Measured across the particle screensavers, most sit comfortably above 1.0
+// even at 20% washout; the dim additive-accumulation ones do not, and this
+// multiplier is sized to pull them back over that line.
+const LARGE_DISPLAY_LUMINANCE_BOOST = 1.6
+
+/**
+ * Whether a canvas is large enough to be treated as a big-room display.
+ *
+ * Anything meaningfully larger than 1080p: the wall is 6000x1200 (3.5x the
+ * pixel area), while a 1440p desk monitor at 1.78x should not trigger
+ * big-room treatment on its own -- hence the 1.5x margin rather than 1.0x.
+ *
+ * @param {HTMLCanvasElement} canvas
+ * @returns {boolean}
+ */
+export function isLargeDisplay(canvas) {
+  const w = canvas.width || 1
+  const h = canvas.height || 1
+  return w * h > 1920 * 1080 * 1.5
+}
+
+/**
+ * Whether a canvas is big enough that ambient room light is the dominant
+ * visibility problem -- i.e. a projector wall rather than a large monitor.
+ *
+ * Deliberately a higher bar than isLargeDisplay. That threshold (1.5x of
+ * 1080p) is right for point size, where a 1440p monitor genuinely benefits
+ * from slightly larger dots and the change is subtle. Brightness is far more
+ * noticeable, and a 1440p desk monitor at 1.78x area has no washout problem to
+ * solve -- lifting its luminance would just make dim screensavers look wrong
+ * on hardware nobody complained about. 3x of 1080p keeps 1440p out while
+ * still catching the wall (3.47x) and 4K (4x), which is plausibly projected.
+ *
+ * @param {HTMLCanvasElement} canvas
+ * @returns {boolean}
+ */
+export function isBigRoomDisplay(canvas) {
+  const w = canvas.width || 1
+  const h = canvas.height || 1
+  return w * h > 1920 * 1080 * 3
+}
+
+/**
+ * Luminance multiplier for screensavers that are dim by design.
+ *
+ * Third companion to pointScale (how big) and particleSide (how many): this is
+ * how *bright*. Dim-on-black screensavers rely on contrast against a near-zero
+ * black level. On a projector screen, ambient light lifts that floor and
+ * crushes exactly the faint detail they depend on -- the effect reported in
+ * issue #88, where the strange attractor became invisible in the room while
+ * looking fine on a desk monitor.
+ *
+ * Returns 1.0 for anything desk-sized, including 1440p, so normal monitors and
+ * the preview harness are unchanged; only big-room canvases get the lift. Kept
+ * as a plain multiplier so a shader can apply it to whichever term actually
+ * controls its brightness (colour, alpha, or both) rather than assuming one
+ * shape.
+ *
+ * @param {HTMLCanvasElement} canvas
+ * @returns {number} multiplier for the shader's luminance term
+ */
+export function luminanceScale(canvas) {
+  return isBigRoomDisplay(canvas) ? LARGE_DISPLAY_LUMINANCE_BOOST : 1.0
 }
 
 /**
