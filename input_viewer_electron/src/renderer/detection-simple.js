@@ -232,22 +232,46 @@ export function compareFrames(frame1, frame2) {
   const stride = 4 * CONFIG.sampleRate
   const threshold = CONFIG.pixelDifferenceThreshold
   const len = data1.length
+
+  // Total samples the loop below would take, and the number of misses past
+  // which a match becomes arithmetically impossible. Once more than
+  // (1 - matchThreshold) of the samples have missed, the final ratio cannot
+  // reach the threshold no matter how every remaining pixel compares, so
+  // scanning on is wasted work. The live-signal case (frames differ) blows
+  // the budget almost immediately; the no-signal case still scans fully,
+  // which is correct since a match has to be proven.
+  const totalSamples = Math.ceil(len / stride)
+  const maxMisses = totalSamples - Math.ceil(totalSamples * CONFIG.matchThreshold)
+
   let sampledPixels = 0
   let matchingPixels = 0
+  let misses = 0
 
   // Optimized pixel sampling with inline abs calculation (avoids Math.abs function calls)
   for (let i = 0; i < len; i += stride) {
     sampledPixels++
 
-    // Inline absolute difference without Math.abs (faster)
+    // Inline absolute difference without Math.abs (faster). A sample counts
+    // as matching only when R, G and B all pass; any channel failing is a
+    // miss and trips the early-exit budget.
     let d = data1[i] - data2[i]
-    if ((d < 0 ? -d : d) > threshold) continue
+    if ((d < 0 ? -d : d) > threshold) {
+      if (++misses > maxMisses) return false
+      continue
+    }
 
     d = data1[i + 1] - data2[i + 1]
-    if ((d < 0 ? -d : d) > threshold) continue
+    if ((d < 0 ? -d : d) > threshold) {
+      if (++misses > maxMisses) return false
+      continue
+    }
 
     d = data1[i + 2] - data2[i + 2]
-    if ((d < 0 ? -d : d) <= threshold) matchingPixels++
+    if ((d < 0 ? -d : d) <= threshold) {
+      matchingPixels++
+    } else if (++misses > maxMisses) {
+      return false
+    }
   }
 
   const matchRatio = matchingPixels / sampledPixels
