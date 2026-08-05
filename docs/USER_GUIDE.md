@@ -21,6 +21,14 @@ Download the latest version from GitHub Releases:
 
 The app auto-updates when new versions are available.
 
+## Presenter Booth Setup
+
+1. **Connect your laptop** using the Thunderbolt (USB-C) cable in the presenter booth
+   - The cable is marked with **"UP"** - this side should face up when plugging in
+2. Wait about **10 seconds** for your screen to appear
+3. This cable connects to a docking station, which is connected to the PC controlling the videowall
+4. Your laptop screen will appear as an input in the Input Viewer app
+
 ## Basic Usage
 
 ### Selecting Inputs

@@ -7,13 +7,23 @@
  */
 
 import {
-  checkNoSignal,
+  checkNoSignalFromSource,
   isReady as isDetectionReady,
   saveReferenceScreenshot,
   captureScreenshot,
   serializeReferences,
   deserializeReferences
 } from './detection-simple.js'
+
+import {
+  createFrameSource,
+  supportsWebCodecsFrames
+} from './frame-source.js'
+
+import {
+  createGpuCompositor,
+  supportsGpuCompositing
+} from './gpu-compositor.js'
 
 import {
   initScreensavers,
@@ -75,7 +85,11 @@ const state = {
   remoteKeyboardHost: '',
   remoteKeyboardApiKey: '',
   // Presenter tool debug overlay
-  presenterDebugEnabled: false
+  presenterDebugEnabled: false,
+  // Experimental WebGPU compositing (issue #62). Off by default: the CSS
+  // path is what ships, and this takes over drawing the live video.
+  gpuCompositing: false,
+  gpuCompositor: null
 }
 
 // =============================================================================
@@ -130,6 +144,8 @@ const elements = {
   // DVD screensaver overlay
   dvdOverlay: document.getElementById('dvd-overlay'),
   screensaverCanvas: document.getElementById('screensaver-canvas'),
+  // Experimental WebGPU compositing target (issue #62)
+  gpuCanvas: document.getElementById('gpu-canvas'),
   // Remote keyboard settings elements
   remoteKeyboardToggle: document.getElementById('remote-keyboard-toggle'),
   remoteKeyboardFields: document.getElementById('remote-keyboard-fields'),
@@ -174,6 +190,7 @@ async function saveSettings() {
         remoteKeyboardHost: state.remoteKeyboardHost,
         remoteKeyboardApiKey: state.remoteKeyboardApiKey,
         presenterDebugEnabled: state.presenterDebugEnabled,
+        gpuCompositing: state.gpuCompositing,
         inputs: state.settings.inputs,
         initialSetupComplete: state.settings.initialSetupComplete,
         noSignalReferences: state.settings.noSignalReferences
@@ -209,7 +226,9 @@ function getDefaultSettings() {
     remoteKeyboardEnabled: false,
     remoteKeyboardHost: '',
     remoteKeyboardApiKey: '',
-    presenterDebugEnabled: false
+    presenterDebugEnabled: false,
+    // Experimental; see initGpuCompositing and issue #62.
+    gpuCompositing: false
   }
 }
 
@@ -1498,6 +1517,9 @@ function setupEventListeners() {
   // Device changes (when plugging/unplugging devices)
   navigator.mediaDevices.addEventListener('devicechange', async () => {
     console.log('Device change detected')
+    // Drop detection frame sources: a re-plugged capture card gets new tracks,
+    // and the old ones would otherwise be read until the loop noticed.
+    closeAllFrameSources()
     await getVideoDevices()
   })
 
@@ -1521,88 +1543,291 @@ function setupEventListeners() {
 // No-Signal Detection
 // =============================================================================
 
+// Frame sources for detection, keyed by deviceId (issue #61). Each entry also
+// records the track it was built from, so a device that gets a new stream
+// (input switch, device re-plug) gets a fresh source instead of reading a dead
+// track forever.
+const frameSources = new Map()
+
+/**
+ * Frame source for a device, creating or replacing it as needed.
+ *
+ * Prefers WebCodecs and falls back to the canvas readback; see frame-source.js.
+ * Returns null when the video has no usable track yet.
+ */
+function getFrameSource(deviceId, video) {
+  const track = video.srcObject?.getVideoTracks?.()[0] ?? null
+  if (!track) {
+    // Stream gone: drop any source so the next live track builds a new one.
+    const stale = frameSources.get(deviceId)
+    if (stale) {
+      stale.source.close()
+      frameSources.delete(deviceId)
+    }
+    return null
+  }
+
+  const existing = frameSources.get(deviceId)
+  if (existing && existing.track === track) return existing.source
+
+  if (existing) existing.source.close()
+
+  const source = createFrameSource(video, state.detectionCanvas)
+  frameSources.set(deviceId, { track, source })
+  if (CONFIG_DETECT_LOG) {
+    console.log(`[Detection] Frame source for ${deviceId}: ${source.kind}`)
+  }
+  return source
+}
+
+/** Release every frame source (device list changed, detection stopping). */
+function closeAllFrameSources() {
+  for (const { source } of frameSources.values()) source.close()
+  frameSources.clear()
+}
+
+// One-line log per source creation is useful when diagnosing which path is in
+// use on the wall; the per-cycle detection logging stays behind CONFIG.
+const CONFIG_DETECT_LOG = true
+
+/**
+ * Bring up experimental WebGPU compositing if it has been switched on.
+ *
+ * Off unless `gpuCompositing: true` is set in settings.json. Default behaviour
+ * is the CSS path Chromium already uses, which keeps decoded frames on the GPU
+ * -- so this is a benchmarking alternative (issue #62), not an improvement to
+ * switch on blind.
+ *
+ * Every failure path leaves the CSS layout untouched: no adapter, no context,
+ * a shader that will not compile, or a throw during setup all end with the
+ * canvas hidden and video rendering exactly as before.
+ */
+async function initGpuCompositing() {
+  if (!state.gpuCompositing) return
+
+  const canvas = elements.gpuCanvas
+  if (!canvas) {
+    console.warn('[GPU] No compositor canvas in the DOM; staying on the CSS path')
+    return
+  }
+
+  if (!(await supportsGpuCompositing())) {
+    console.warn('[GPU] WebGPU unavailable; staying on the CSS path')
+    return
+  }
+
+  let compositor
+  try {
+    compositor = await createGpuCompositor(canvas)
+  } catch (err) {
+    console.error('[GPU] Compositor setup failed; staying on the CSS path:', err)
+    return
+  }
+  if (!compositor) {
+    console.warn('[GPU] Compositor unavailable; staying on the CSS path')
+    return
+  }
+
+  state.gpuCompositor = compositor
+  // Size the backing store to device pixels, or the canvas renders at its
+  // 300x150 default and gets stretched. Capped at 2x DPR to match the
+  // screensaver runtime and avoid enormous buffers on the videowall.
+  const sizeCanvas = () => {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2)
+    canvas.width = Math.max(1, Math.floor(window.innerWidth * dpr))
+    canvas.height = Math.max(1, Math.floor(window.innerHeight * dpr))
+  }
+  sizeCanvas()
+  window.addEventListener('resize', sizeCanvas)
+
+  canvas.classList.remove('hidden')
+  document.body.classList.add('gpu-compositing')
+  console.log('[GPU] WebGPU compositing active (experimental)')
+
+  // Drive from rVFC so compositing follows decoded frames, same rationale as
+  // the detection loop. One failed frame disables the path rather than
+  // repeating the error every frame.
+  const drawFrame = () => {
+    if (!state.gpuCompositor) return
+    try {
+      state.gpuCompositor.draw(gpuFeedLayout())
+    } catch (err) {
+      console.error('[GPU] Draw failed; reverting to the CSS path:', err)
+      teardownGpuCompositing()
+      return
+    }
+    scheduleGpuFrame(drawFrame)
+  }
+  scheduleGpuFrame(drawFrame)
+}
+
+/** Schedule the next composite, preferring decoded-frame callbacks. */
+function scheduleGpuFrame(cb) {
+  const video = elements.leftVideo
+  if (video?.srcObject && !video.paused &&
+      typeof video.requestVideoFrameCallback === 'function') {
+    video.requestVideoFrameCallback(cb)
+  } else {
+    requestAnimationFrame(cb)
+  }
+}
+
+/** Where each feed sits in the composited target, in normalised [0,1] space. */
+function gpuFeedLayout() {
+  if (state.layoutMode === 'dual') {
+    // Two halves with the centre gap expressed as a fraction of the width.
+    const gap = (state.centerGap || 0) / (window.innerWidth || 1)
+    const half = (1 - gap) / 2
+    return [
+      { video: elements.leftVideo, offset: [0, 0], scale: [half, 1] },
+      { video: elements.rightVideo, offset: [half + gap, 0], scale: [half, 1] },
+    ]
+  }
+  return [{ video: elements.leftVideo, offset: [0, 0], scale: [1, 1] }]
+}
+
+/** Return to the CSS path and release GPU resources. */
+function teardownGpuCompositing() {
+  if (!state.gpuCompositor) return
+  state.gpuCompositor.destroy()
+  state.gpuCompositor = null
+  elements.gpuCanvas?.classList.add('hidden')
+  document.body.classList.remove('gpu-compositing')
+  console.log('[GPU] Compositing stopped; CSS path restored')
+}
+
 /**
  * Initialize the no-signal detection system
  */
 async function initNoSignalDetection() {
-  // Create offscreen canvas for frame capture
+  // Canvas is still needed: it backs the fallback frame source and the
+  // freeze-frame capture path.
   state.detectionCanvas = document.createElement('canvas')
-  
+
+  console.log(`[Detection] Frame reading: ${supportsWebCodecsFrames() ? 'WebCodecs available' : 'canvas fallback only'}`)
+
   // Load saved reference screenshots from settings
   if (state.settings.noSignalReferences) {
     await deserializeReferences(state.settings.noSignalReferences)
   }
-  
+
   console.log('[Detection] No-signal detection initialized')
   startDetectionLoop()
 }
 
+// Detection cadence. Previously counted 100 rAF ticks, which assumed 60Hz --
+// on a 120Hz panel that is 0.8s and on a stalled feed it never fires. A wall
+// clock interval means the same real-world cadence regardless.
+const DETECT_INTERVAL_MS = 1600
+
 /**
- * Start the detection loop using requestAnimationFrame
- * Detection runs once every 100 frames to avoid CPU overload
+ * Start the detection loop.
+ *
+ * Paced by requestVideoFrameCallback on a capture video when available (issue
+ * #60), which ticks per *decoded frame* rather than per display refresh. Two
+ * consequences that matter here:
+ *
+ *   - sampling follows the capture feed, not the monitor, so cadence does not
+ *     change with refresh rate
+ *   - a stalled feed stops delivering callbacks, so detection idles instead of
+ *     spinning at 60Hz over a frozen image
+ *
+ * rAF remains the fallback when rVFC is unavailable or no video is playing --
+ * detection must keep running even if it is only to notice nothing is arriving.
  */
 function startDetectionLoop() {
   if (state.detectionRunning) return
   state.detectionRunning = true
-  state.detectionFrameCount = 0
-  
-  function detectFrame() {
-    // Stop the loop if detection is disabled
-    if (!state.detectionRunning) {
-      return
-    }
 
-    state.detectionFrameCount++
+  let lastRun = 0
+  let running = false
 
-    // Only run detection every 100 frames (~1.6 seconds at 60fps)
-    // Reset counter to avoid potential overflow after long runtime
-    if (state.detectionFrameCount >= 100) {
-      state.detectionFrameCount = 0
-      if (state.frozen) {
-        requestAnimationFrame(detectFrame)
-        return
-      }
-      const devicesToCheck = getUniqueActiveDevices()
-      
-      for (const { deviceId, video, side } of devicesToCheck) {
-        if (!video.srcObject || video.readyState < 2) continue
-        
-        // Only check if device has a reference screenshot
-        if (!isDetectionReady(deviceId)) continue
-        
-        const isNoSignal = checkNoSignal(deviceId, video, state.detectionCanvas)
-        
-        // Update UI if state changed
-        if (isNoSignal && !state.noSignalState[side]) {
-          showNoSignal(side)
-          console.log(`[Detection] No signal detected on ${side} (${deviceId})`)
-        } else if (!isNoSignal && state.noSignalState[side]) {
-          hideNoSignal(side)
-          console.log(`[Detection] Signal restored on ${side} (${deviceId})`)
-        }
-        
-        // If same device is on both sides, sync the state
-        if (state.layoutMode === 'dual' && state.leftDeviceId === state.rightDeviceId) {
-          const otherSide = side === 'left' ? 'right' : 'left'
-          if (isNoSignal && !state.noSignalState[otherSide]) {
-            showNoSignal(otherSide)
-            console.log(`[Detection] No signal detected on ${otherSide} (synced from ${side})`)
-          } else if (!isNoSignal && state.noSignalState[otherSide]) {
-            hideNoSignal(otherSide)
-            console.log(`[Detection] Signal restored on ${otherSide} (synced from ${side})`)
-          }
-        }
+  const supportsRvfc = typeof HTMLVideoElement.prototype.requestVideoFrameCallback === 'function'
+  console.log(`[Detection] Loop paced by ${supportsRvfc ? 'requestVideoFrameCallback' : 'requestAnimationFrame'}`)
+
+  async function runDetection() {
+    const devicesToCheck = getUniqueActiveDevices()
+
+    for (const { deviceId, video, side } of devicesToCheck) {
+      if (!video.srcObject || video.readyState < 2) continue
+      if (!isDetectionReady(deviceId)) continue
+
+      const source = getFrameSource(deviceId, video)
+      if (!source) continue
+
+      const isNoSignal = await checkNoSignalFromSource(deviceId, source)
+
+      // Detection is async now, so the layout may have changed while awaiting.
+      if (!state.detectionRunning) return
+
+      if (isNoSignal && !state.noSignalState[side]) {
+        showNoSignal(side)
+        console.log(`[Detection] No signal detected on ${side} (${deviceId})`)
+      } else if (!isNoSignal && state.noSignalState[side]) {
+        hideNoSignal(side)
+        console.log(`[Detection] Signal restored on ${side} (${deviceId})`)
       }
 
-      // Update DVD screensaver based on current no-signal state
-      updateDvdScreensaver()
+      // If same device is on both sides, sync the state
+      if (state.layoutMode === 'dual' && state.leftDeviceId === state.rightDeviceId) {
+        const otherSide = side === 'left' ? 'right' : 'left'
+        if (isNoSignal && !state.noSignalState[otherSide]) {
+          showNoSignal(otherSide)
+          console.log(`[Detection] No signal detected on ${otherSide} (synced from ${side})`)
+        } else if (!isNoSignal && state.noSignalState[otherSide]) {
+          hideNoSignal(otherSide)
+          console.log(`[Detection] Signal restored on ${otherSide} (synced from ${side})`)
+        }
+      }
     }
 
-    // Schedule next frame
-    requestAnimationFrame(detectFrame)
+    updateDvdScreensaver()
   }
-  
-  requestAnimationFrame(detectFrame)
+
+  function tick(now) {
+    if (!state.detectionRunning) return
+
+    const t = typeof now === 'number' ? now : performance.now()
+    // `running` guards re-entry: detection is async and a slow cycle must not
+    // overlap itself, or two passes would race on the same device state.
+    if (!running && !state.frozen && t - lastRun >= DETECT_INTERVAL_MS) {
+      lastRun = t
+      running = true
+      runDetection()
+        .catch(err => console.error('[Detection] Cycle failed:', err))
+        .finally(() => { running = false })
+    }
+
+    schedule()
+  }
+
+  function schedule() {
+    if (!state.detectionRunning) return
+
+    if (supportsRvfc) {
+      // Pace from whichever active video is playing; the left feed is always
+      // present in both layouts, so prefer it and fall back to the right.
+      for (const video of [elements.leftVideo, elements.rightVideo]) {
+        if (video?.srcObject && !video.paused) {
+          video.requestVideoFrameCallback(tick)
+          return
+        }
+      }
+    }
+    // No playing video (or no rVFC): keep ticking so detection still notices
+    // when a feed comes back.
+    requestAnimationFrame(tick)
+  }
+
+  schedule()
+}
+
+/**
+ * Stop the detection loop and release its frame sources.
+ */
+function stopDetectionLoop() {
+  state.detectionRunning = false
+  closeAllFrameSources()
 }
 
 /**
@@ -1716,6 +1941,10 @@ async function init() {
   state.presenterDebugEnabled = state.settings.presenterDebugEnabled ?? false
   updatePresenterDebugUI()
 
+  // Experimental WebGPU compositing (issue #62): opt-in via settings.json only,
+  // and it self-disables if WebGPU is unusable.
+  state.gpuCompositing = state.settings.gpuCompositing ?? false
+
   // Initialize system volume from actual system (async)
   syncSystemVolume()
 
@@ -1749,6 +1978,12 @@ async function init() {
 
   // Initialize screensaver registry (random screensaver chosen on activation)
   initScreensavers(elements.screensaverCanvas)
+
+  // Experimental WebGPU compositing. No-op unless enabled in settings, and
+  // failures leave the CSS path in place, so this cannot block startup.
+  initGpuCompositing().catch(err => {
+    console.error('[GPU] Compositing init failed; staying on the CSS path:', err)
+  })
 
   // Initialize no-signal detection (don't await - let it load in background)
   initNoSignalDetection().catch(err => {
@@ -1790,5 +2025,7 @@ export {
   toggleInputEnabled,
   getDefaultSettings,
   setCenterGap,
-  setBorderWidth
+  setBorderWidth,
+  startDetectionLoop,
+  stopDetectionLoop
 }

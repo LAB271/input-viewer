@@ -67,6 +67,35 @@ These are targets, not contractual commitments, and they apply to this open sour
 project. Reports about Schuberg Philis production systems fall under
 <https://schubergphilis.com/security> instead.
 
+## Known posture
+
+Two things worth knowing before you install or deploy this, both verified rather
+than assumed (issues #55, #56).
+
+**Renderer hardening.** The window runs with `contextIsolation: true`,
+`nodeIntegration: false` and `sandbox: true`. `webSecurity` and
+`allowRunningInsecureContent` are set explicitly rather than left to defaults.
+Navigation away from local content is blocked, child windows are denied
+(external `http(s)` links open in the system browser instead), and permission
+requests are denied except camera and microphone, which capture needs.
+
+**Distribution is not signed.** This is the weakest link in the chain, and it is
+deliberate only in the sense that we have not set up certificates:
+
+- macOS builds are produced with `CSC_IDENTITY_AUTO_DISCOVERY: false` — they are
+  **unsigned and not notarized**. Verified on the shipped v2.7.0 DMG:
+  `codesign` reports "code object is not signed at all".
+- Windows builds have no signing configuration.
+- Because nothing is signed, `electron-updater` cannot verify a signature before
+  applying an update. It checks the SHA512 in `latest-mac.yml` / `latest.yml`,
+  which protects against corruption in transit but not against anyone who can
+  publish to the release feed.
+
+Practically: trust in an update reduces to trust in the GitHub release and the
+repository's write access. If you are deploying this somewhere that matters,
+fix signing first. Signing needs an Apple Developer ID and a Windows
+certificate added as repository secrets; no certificates are configured today.
+
 ## Scope
 
 In scope: the code in this repository, and documentation that would lead a careful

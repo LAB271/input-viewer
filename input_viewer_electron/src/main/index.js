@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: 2025-2026 Schuberg Philis / Lab271
-const { app, BrowserWindow, ipcMain, systemPreferences, dialog } = require('electron')
+const { app, BrowserWindow, ipcMain, systemPreferences, dialog, shell } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const { exec } = require('child_process')
@@ -103,6 +103,16 @@ function createWindow() {
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
+      // The preload only requires 'electron' (contextBridge + ipcRenderer),
+      // both of which work under the sandbox, so this costs nothing here. It
+      // puts the renderer in an OS-level sandboxed process, which is the main
+      // hardening step from the Electron security checklist (issue #55).
+      sandbox: true,
+      // Explicit rather than relying on defaults, so a future Electron
+      // default change cannot silently weaken these.
+      webSecurity: true,
+      allowRunningInsecureContent: false,
+      experimentalFeatures: false,
       preload: path.join(__dirname, '../preload/index.js')
     }
   })
@@ -114,6 +124,39 @@ function createWindow() {
   } else {
     mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'))
   }
+
+  // The renderer only ever shows local content. Refuse to navigate anywhere
+  // else and refuse to open child windows, so a compromised renderer cannot
+  // pull in remote code or spawn a window with different preferences.
+  // Anything genuinely external goes to the user's real browser.
+  const allowedOrigin = isDev ? 'http://localhost:5173' : null
+
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    if (allowedOrigin && url.startsWith(allowedOrigin)) return
+    if (url.startsWith('file://')) return
+    console.warn('[Security] Blocked navigation to', url)
+    event.preventDefault()
+  })
+
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    // No in-app window should ever be opened by content; hand http(s) to the
+    // system browser and drop everything else.
+    if (/^https?:\/\//.test(url)) {
+      shell.openExternal(url)
+    } else {
+      console.warn('[Security] Blocked window open for', url)
+    }
+    return { action: 'deny' }
+  })
+
+  // Deny every permission request by default. The app needs camera and
+  // microphone for capture; nothing else should be grantable.
+  mainWindow.webContents.session.setPermissionRequestHandler((_wc, permission, callback) => {
+    const allowed = permission === 'media' || permission === 'audioCapture' ||
+      permission === 'videoCapture'
+    if (!allowed) console.warn('[Security] Denied permission request:', permission)
+    callback(allowed)
+  })
 
   // Handle window closed
   mainWindow.on('closed', () => {

@@ -55,6 +55,11 @@
     <div class="logo-subtext">Connect a video input device to begin</div>
   </div>
 
+  <!-- Experimental WebGPU compositing target (issue #62). Hidden unless
+       gpuCompositing is enabled in settings; sits behind the overlays so the
+       no-signal cards and logos still render as DOM on top. -->
+  <canvas id="gpu-canvas" class="hidden"></canvas>
+
   <!-- Screensaver Overlay (when all feeds have no signal) -->
   <div id="dvd-overlay" class="hidden">
     <canvas id="screensaver-canvas"></canvas>
