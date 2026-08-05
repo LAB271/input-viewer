@@ -239,6 +239,28 @@ body.cursor-visible .input-label {
   display: block;
 }
 
+/* Experimental WebGPU compositing target (issue #62). Hidden by default; only
+   shown when gpuCompositing is enabled in settings. Sits at z-index 0 so the
+   no-signal overlays, logos and screensaver still draw above it. */
+#gpu-canvas {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  display: block;
+  z-index: 0;
+  background: #000;
+}
+
+/* When compositing is active the canvas draws the video, so the <video>
+   elements must not also paint. They stay in the DOM and keep playing, because
+   both detection and the compositor read frames from them. */
+body.gpu-compositing #left-video,
+body.gpu-compositing #right-video {
+  opacity: 0;
+}
+
 /* =============================================================================
    Center Logo
    ============================================================================= */

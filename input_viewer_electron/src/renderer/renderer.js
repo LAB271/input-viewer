@@ -21,6 +21,11 @@ import {
 } from './frame-source.js'
 
 import {
+  createGpuCompositor,
+  supportsGpuCompositing
+} from './gpu-compositor.js'
+
+import {
   initScreensavers,
   startScreensaver,
   stopScreensaver,
@@ -80,7 +85,11 @@ const state = {
   remoteKeyboardHost: '',
   remoteKeyboardApiKey: '',
   // Presenter tool debug overlay
-  presenterDebugEnabled: false
+  presenterDebugEnabled: false,
+  // Experimental WebGPU compositing (issue #62). Off by default: the CSS
+  // path is what ships, and this takes over drawing the live video.
+  gpuCompositing: false,
+  gpuCompositor: null
 }
 
 // =============================================================================
@@ -135,6 +144,8 @@ const elements = {
   // DVD screensaver overlay
   dvdOverlay: document.getElementById('dvd-overlay'),
   screensaverCanvas: document.getElementById('screensaver-canvas'),
+  // Experimental WebGPU compositing target (issue #62)
+  gpuCanvas: document.getElementById('gpu-canvas'),
   // Remote keyboard settings elements
   remoteKeyboardToggle: document.getElementById('remote-keyboard-toggle'),
   remoteKeyboardFields: document.getElementById('remote-keyboard-fields'),
@@ -179,6 +190,7 @@ async function saveSettings() {
         remoteKeyboardHost: state.remoteKeyboardHost,
         remoteKeyboardApiKey: state.remoteKeyboardApiKey,
         presenterDebugEnabled: state.presenterDebugEnabled,
+        gpuCompositing: state.gpuCompositing,
         inputs: state.settings.inputs,
         initialSetupComplete: state.settings.initialSetupComplete,
         noSignalReferences: state.settings.noSignalReferences
@@ -214,7 +226,9 @@ function getDefaultSettings() {
     remoteKeyboardEnabled: false,
     remoteKeyboardHost: '',
     remoteKeyboardApiKey: '',
-    presenterDebugEnabled: false
+    presenterDebugEnabled: false,
+    // Experimental; see initGpuCompositing and issue #62.
+    gpuCompositing: false
   }
 }
 
@@ -1577,6 +1591,112 @@ function closeAllFrameSources() {
 const CONFIG_DETECT_LOG = true
 
 /**
+ * Bring up experimental WebGPU compositing if it has been switched on.
+ *
+ * Off unless `gpuCompositing: true` is set in settings.json. Default behaviour
+ * is the CSS path Chromium already uses, which keeps decoded frames on the GPU
+ * -- so this is a benchmarking alternative (issue #62), not an improvement to
+ * switch on blind.
+ *
+ * Every failure path leaves the CSS layout untouched: no adapter, no context,
+ * a shader that will not compile, or a throw during setup all end with the
+ * canvas hidden and video rendering exactly as before.
+ */
+async function initGpuCompositing() {
+  if (!state.gpuCompositing) return
+
+  const canvas = elements.gpuCanvas
+  if (!canvas) {
+    console.warn('[GPU] No compositor canvas in the DOM; staying on the CSS path')
+    return
+  }
+
+  if (!(await supportsGpuCompositing())) {
+    console.warn('[GPU] WebGPU unavailable; staying on the CSS path')
+    return
+  }
+
+  let compositor
+  try {
+    compositor = await createGpuCompositor(canvas)
+  } catch (err) {
+    console.error('[GPU] Compositor setup failed; staying on the CSS path:', err)
+    return
+  }
+  if (!compositor) {
+    console.warn('[GPU] Compositor unavailable; staying on the CSS path')
+    return
+  }
+
+  state.gpuCompositor = compositor
+  // Size the backing store to device pixels, or the canvas renders at its
+  // 300x150 default and gets stretched. Capped at 2x DPR to match the
+  // screensaver runtime and avoid enormous buffers on the videowall.
+  const sizeCanvas = () => {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2)
+    canvas.width = Math.max(1, Math.floor(window.innerWidth * dpr))
+    canvas.height = Math.max(1, Math.floor(window.innerHeight * dpr))
+  }
+  sizeCanvas()
+  window.addEventListener('resize', sizeCanvas)
+
+  canvas.classList.remove('hidden')
+  document.body.classList.add('gpu-compositing')
+  console.log('[GPU] WebGPU compositing active (experimental)')
+
+  // Drive from rVFC so compositing follows decoded frames, same rationale as
+  // the detection loop. One failed frame disables the path rather than
+  // repeating the error every frame.
+  const drawFrame = () => {
+    if (!state.gpuCompositor) return
+    try {
+      state.gpuCompositor.draw(gpuFeedLayout())
+    } catch (err) {
+      console.error('[GPU] Draw failed; reverting to the CSS path:', err)
+      teardownGpuCompositing()
+      return
+    }
+    scheduleGpuFrame(drawFrame)
+  }
+  scheduleGpuFrame(drawFrame)
+}
+
+/** Schedule the next composite, preferring decoded-frame callbacks. */
+function scheduleGpuFrame(cb) {
+  const video = elements.leftVideo
+  if (video?.srcObject && !video.paused &&
+      typeof video.requestVideoFrameCallback === 'function') {
+    video.requestVideoFrameCallback(cb)
+  } else {
+    requestAnimationFrame(cb)
+  }
+}
+
+/** Where each feed sits in the composited target, in normalised [0,1] space. */
+function gpuFeedLayout() {
+  if (state.layoutMode === 'dual') {
+    // Two halves with the centre gap expressed as a fraction of the width.
+    const gap = (state.centerGap || 0) / (window.innerWidth || 1)
+    const half = (1 - gap) / 2
+    return [
+      { video: elements.leftVideo, offset: [0, 0], scale: [half, 1] },
+      { video: elements.rightVideo, offset: [half + gap, 0], scale: [half, 1] },
+    ]
+  }
+  return [{ video: elements.leftVideo, offset: [0, 0], scale: [1, 1] }]
+}
+
+/** Return to the CSS path and release GPU resources. */
+function teardownGpuCompositing() {
+  if (!state.gpuCompositor) return
+  state.gpuCompositor.destroy()
+  state.gpuCompositor = null
+  elements.gpuCanvas?.classList.add('hidden')
+  document.body.classList.remove('gpu-compositing')
+  console.log('[GPU] Compositing stopped; CSS path restored')
+}
+
+/**
  * Initialize the no-signal detection system
  */
 async function initNoSignalDetection() {
@@ -1821,6 +1941,10 @@ async function init() {
   state.presenterDebugEnabled = state.settings.presenterDebugEnabled ?? false
   updatePresenterDebugUI()
 
+  // Experimental WebGPU compositing (issue #62): opt-in via settings.json only,
+  // and it self-disables if WebGPU is unusable.
+  state.gpuCompositing = state.settings.gpuCompositing ?? false
+
   // Initialize system volume from actual system (async)
   syncSystemVolume()
 
@@ -1854,6 +1978,12 @@ async function init() {
 
   // Initialize screensaver registry (random screensaver chosen on activation)
   initScreensavers(elements.screensaverCanvas)
+
+  // Experimental WebGPU compositing. No-op unless enabled in settings, and
+  // failures leave the CSS path in place, so this cannot block startup.
+  initGpuCompositing().catch(err => {
+    console.error('[GPU] Compositing init failed; staying on the CSS path:', err)
+  })
 
   // Initialize no-signal detection (don't await - let it load in background)
   initNoSignalDetection().catch(err => {
