@@ -39,6 +39,9 @@ const canvasContextCache = new WeakMap()
  */
 export function saveReferenceScreenshot(deviceId, imageData) {
   referenceScreenshots.set(deviceId, imageData)
+  // Drop any cached downscale: a re-capture at the same dimensions would
+  // otherwise keep comparing against the previous reference's pixels.
+  scaledReferenceCache.delete(deviceId)
   console.log(`[Detection] Saved reference screenshot for ${deviceId}: ${imageData.width}x${imageData.height}`)
 }
 
@@ -58,6 +61,7 @@ export function hasReferenceScreenshot(deviceId) {
 export function clearReferenceScreenshot(deviceId) {
   referenceScreenshots.delete(deviceId)
   deviceStates.delete(deviceId)
+  scaledReferenceCache.delete(deviceId)
   console.log(`[Detection] Cleared reference screenshot for ${deviceId}`)
 }
 
@@ -114,6 +118,7 @@ export async function deserializeReferences(data) {
       const imageData = ctx.getImageData(0, 0, info.width, info.height)
       
       referenceScreenshots.set(deviceId, imageData)
+      scaledReferenceCache.delete(deviceId)
       console.log(`[Detection] Restored reference screenshot for ${deviceId}`)
     } catch (err) {
       console.error(`[Detection] Failed to restore reference for ${deviceId}:`, err)
@@ -188,23 +193,144 @@ export function checkNoSignal(deviceId, video, canvas) {
       console.log(`[Detection] ${deviceId}: ${isMatch ? 'MATCH (no signal)' : 'NO MATCH (has signal)'}`)
     }
     
-    // Use simple debouncing: need 2 consecutive matches to trigger
-    if (isMatch) {
-      state.matchCount++
-      state.noMatchCount = 0
-      if (state.matchCount >= 2) {
-        state.lastResult = true
-      }
-    } else {
-      state.noMatchCount++
-      state.matchCount = 0
-      if (state.noMatchCount >= 2) {
-        state.lastResult = false
-      }
-    }
-    
+    return applyDebounce(state, isMatch)
+
+  } catch (err) {
+    console.error('[Detection] Error during detection:', err)
     return state.lastResult
-    
+  }
+}
+
+// Resampled references, keyed by deviceId. A reference is captured once at
+// capture resolution but compared against every detection cycle at detect
+// resolution, so the downscale is cached rather than repeated.
+const scaledReferenceCache = new Map()
+
+/**
+ * A device's reference screenshot resampled to the given size.
+ *
+ * Nearest-neighbour rather than a smooth filter, deliberately: detection asks
+ * "are these the same picture", and interpolation would blur a sharp no-signal
+ * card toward its background, shifting pixel values away from what the live
+ * frame produces. Nearest-neighbour keeps the sampled values as they were.
+ *
+ * @param {string} deviceId
+ * @param {ImageData} reference
+ * @param {number} width
+ * @param {number} height
+ * @returns {{width: number, height: number, data: Uint8ClampedArray}|null}
+ */
+function referenceAtSize(deviceId, reference, width, height) {
+  if (!width || !height) return null
+
+  // Already the right size: use as-is.
+  if (reference.width === width && reference.height === height) return reference
+
+  const cached = scaledReferenceCache.get(deviceId)
+  if (cached && cached.width === width && cached.height === height &&
+      cached.sourceWidth === reference.width && cached.sourceHeight === reference.height) {
+    return cached.frame
+  }
+
+  const src = reference.data
+  const out = new Uint8ClampedArray(width * height * 4)
+  const xRatio = reference.width / width
+  const yRatio = reference.height / height
+
+  for (let y = 0; y < height; y++) {
+    const sy = Math.min(reference.height - 1, (y * yRatio) | 0)
+    const srcRow = sy * reference.width
+    const dstRow = y * width
+    for (let x = 0; x < width; x++) {
+      const sx = Math.min(reference.width - 1, (x * xRatio) | 0)
+      const s = (srcRow + sx) * 4
+      const d = (dstRow + x) * 4
+      out[d] = src[s]
+      out[d + 1] = src[s + 1]
+      out[d + 2] = src[s + 2]
+      out[d + 3] = src[s + 3]
+    }
+  }
+
+  const frame = { width, height, data: out }
+  scaledReferenceCache.set(deviceId, {
+    width, height, sourceWidth: reference.width, sourceHeight: reference.height, frame,
+  })
+  return frame
+}
+
+/**
+ * Fold a single comparison into a device's debounced result.
+ *
+ * Two consecutive agreeing samples are required before the reported state
+ * flips, so one bad frame (a decode hiccup, a mid-resize capture) cannot
+ * blank a live feed or clear a genuine no-signal overlay.
+ *
+ * @param {object} state - Per-device detection state
+ * @param {boolean} isMatch - Whether this frame matched the reference
+ * @returns {boolean} - The debounced no-signal result
+ */
+function applyDebounce(state, isMatch) {
+  if (isMatch) {
+    state.matchCount++
+    state.noMatchCount = 0
+    if (state.matchCount >= 2) {
+      state.lastResult = true
+    }
+  } else {
+    state.noMatchCount++
+    state.matchCount = 0
+    if (state.noMatchCount >= 2) {
+      state.lastResult = false
+    }
+  }
+  return state.lastResult
+}
+
+/**
+ * Check for no-signal using a frame source instead of a video element.
+ *
+ * Same semantics as checkNoSignal -- same comparison, same debounce, same
+ * reference screenshots -- but the pixels come from whatever source is
+ * supplied. That lets the WebCodecs path (issue #61) avoid the canvas
+ * readback getImageData forces, while the canvas source keeps the original
+ * behaviour available as a fallback.
+ *
+ * References are captured at full capture resolution, but sources read at a
+ * reduced detect size, so the two would never match on dimensions. The
+ * reference is therefore resampled to the frame's size on first use and cached,
+ * which keeps every already-saved reference working -- no re-capture needed.
+ *
+ * @param {string} deviceId - Device identifier
+ * @param {{read: () => Promise<{width: number, height: number, data: Uint8ClampedArray}|null>}} source
+ * @returns {Promise<boolean>} - True if no-signal detected
+ */
+export async function checkNoSignalFromSource(deviceId, source) {
+  const reference = referenceScreenshots.get(deviceId)
+  if (!reference) {
+    if (CONFIG.debugLogging) console.log(`[Detection] No reference screenshot for ${deviceId}`)
+    return false
+  }
+
+  const state = getDeviceState(deviceId)
+
+  try {
+    const frame = await source.read()
+    // No frame yet (device still starting) is not evidence either way, so hold
+    // the previous result rather than reporting a spurious change.
+    if (!frame) return state.lastResult
+
+    const scaledReference = referenceAtSize(deviceId, reference, frame.width, frame.height)
+    if (!scaledReference) return state.lastResult
+
+    const isMatch = compareFrames(frame, scaledReference)
+
+    if (CONFIG.debugLogging) {
+      console.log(`[Detection] ${deviceId}: ${isMatch ? 'MATCH (no signal)' : 'NO MATCH (has signal)'}`)
+    }
+
+    return applyDebounce(state, isMatch)
+
   } catch (err) {
     console.error('[Detection] Error during detection:', err)
     return state.lastResult
