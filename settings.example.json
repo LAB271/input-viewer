@@ -1,0 +1,32 @@
+{
+  "_comment": "Example of the settings file the app writes, for reference only. The real file lives in the app's user data directory (Settings shows the exact path) -- nothing reads this copy. Keys mirror getDefaultSettings() in src/renderer/renderer.js.",
+
+  "leftDeviceId": null,
+  "rightDeviceId": null,
+  "defaultInputId": null,
+
+  "layoutMode": null,
+  "centerGap": 60,
+  "borderWidth": 0,
+
+  "leftVolume": 1.0,
+  "rightVolume": 1.0,
+  "systemVolume": 50,
+
+  "inputs": {
+    "<capture-device-id>": {
+      "name": "Laptop",
+      "enabled": true
+    }
+  },
+
+  "initialSetupComplete": false,
+  "noSignalReferences": null,
+
+  "remoteKeyboardEnabled": false,
+  "remoteKeyboardHost": "",
+  "remoteKeyboardApiKey": "",
+
+  "presenterDebugEnabled": false,
+  "gpuCompositing": false
+}

@@ -6,6 +6,24 @@
 
 A lightweight video input viewer — **OBS without the complexity**. View and manage capture card feeds with a clean, simple interface designed for users who need to display video inputs without the overhead of full streaming software.
 
+<!-- SCREENSHOT SLOT (issue #49)
+
+Capturing these needs the real app with capture hardware attached, so the
+markup is left commented out rather than pointing at files that do not exist
+yet -- an unresolved image path renders as a broken image on the repo page.
+
+To finish: drop the files in assets/ and delete the comment markers around the
+two lines below.
+
+  1. assets/screenshot-dual.png  - dual view with two live feeds
+  2. assets/demo.gif             - D/S layout switching and 1-4 input selection
+
+![Input Viewer in dual view](assets/screenshot-dual.png)
+
+![Layout switching and input selection](assets/demo.gif)
+
+-->
+
 ## Download
 
 Download the latest release for your platform:
@@ -62,20 +80,25 @@ Click the ⚙ gear icon to open the settings panel:
 
 ### settings.json
 
-Settings are stored in the app's user data directory:
+Settings are stored in the app's user data directory — the Settings panel shows
+the exact path. Inputs are keyed by capture device id, since index order is not
+stable across reboots:
 
 ```json
 {
-  "inputs": [
-    {"index": 0, "name": "Laptop", "enabled": true, "default": true},
-    {"index": 1, "name": "Desktop", "enabled": true, "default": false},
-    {"index": 2, "name": "Input 3", "enabled": false, "default": false},
-    {"index": 3, "name": "Input 4", "enabled": false, "default": false}
-  ],
-  "centerGap": 100,
-  "borderWidth": 50
+  "leftDeviceId": null,
+  "rightDeviceId": null,
+  "layoutMode": null,
+  "centerGap": 60,
+  "borderWidth": 0,
+  "inputs": {
+    "<capture-device-id>": { "name": "Laptop", "enabled": true }
+  }
 }
 ```
+
+[`settings.example.json`](settings.example.json) in the repo root lists every
+key with its default. It is documentation only; the app does not read it.
 
 ## Development
 
@@ -106,8 +129,25 @@ npm run build:win   # Build Windows installer
 Works with:
 
 - **Any capture card** — USB or PCIe capture devices
-- **Any display** — Adapts to your screen resolution
+- **Any display** — adapts to your screen resolution
 - **Platforms**: macOS, Windows
+
+**Optimised for ultrawide.** It runs on any resolution, but the defaults are
+tuned for very wide displays: on a screen with an aspect ratio of 3:1 or wider
+it starts in dual view (two feeds side by side), and on anything narrower it
+starts in single view. The reference deployment is a 6000×1200 projector
+videowall, which is also what the screensaver scaling in
+`src/renderer/screensavers/gl-base.js` is calibrated against.
+
+## Repository Layout
+
+| Path | What it is |
+|------|------------|
+| [`input_viewer_electron/`](input_viewer_electron/) | The application. Everything that ships is here. |
+| [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) | End-user guide: booth setup, shortcuts, troubleshooting. |
+| [`remote_keyboard/`](remote_keyboard/) | Arduino sketch (ESP32-S3) for the optional Remote Keyboard feature. Receives HTTP requests from the app over WiFi and emits USB HID keypresses to a presenter PC. Flash it separately; the app works without it. The WiFi credentials and API key in the sketch are placeholders to fill in before flashing. |
+| [`spikes/`](spikes/) | Standalone HTML design prototypes (no-signal screen, dropdown/settings, an OpenCV detection experiment). Not built, shipped, or maintained — kept as a visual reference for how those screens were designed. |
+| [`settings.example.json`](settings.example.json) | Documented example of the settings file. Reference only; the app reads its own copy from the user data directory. |
 
 ## Legacy Python Version
 
