@@ -5,8 +5,10 @@
  * lit and orbited by the camera. Heavy GPU; looks great on discrete cards.
  */
 import { createShaderScreensaver } from './gl-base.js'
+import { GLSL } from './glsl-lib.js'
 
-const SHADER = /* glsl */ `
+const SHADER = /* glsl */ `${GLSL.palette}
+
 // Mandelbulb distance estimator.
 float de(vec3 pos, float power) {
   vec3 z = pos;
@@ -83,7 +85,7 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
     float diff = max(dot(n, lightDir), 0.0);
     float fres = pow(1.0 - max(dot(n, -rd), 0.0), 3.0);
     vec3 phase = vec3(0.0, 0.33, 0.67) + iSeed.x;
-    vec3 base = 0.5 + 0.5 * cos(6.2831 * (length(p) * 0.6 + phase + 0.05 * iTime));
+    vec3 base = palettePerceptual(length(p) * 0.6 + 0.05 * iTime, phase);
     col = base * (0.2 + diff) + fres * vec3(0.4, 0.6, 1.0);
   }
   // Volumetric-ish glow toward the fractal surface.

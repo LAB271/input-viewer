@@ -14,10 +14,12 @@
  * whole set, since the destination was a single hardcoded point.
  */
 import { createShaderScreensaver } from './gl-base.js'
+import { GLSL } from './glsl-lib.js'
 
-const SHADER = /* glsl */ `
+const SHADER = /* glsl */ `${GLSL.palette}
+
 vec3 palette(float t, vec3 phase) {
-  return 0.5 + 0.5 * cos(6.2831 * (t + phase));
+  return palettePerceptual(t, phase);
 }
 
 // Eight boundary points that stay detailed all the way down. Hand-picked

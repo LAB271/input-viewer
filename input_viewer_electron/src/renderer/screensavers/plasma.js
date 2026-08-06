@@ -13,7 +13,8 @@
 import { createShaderScreensaver } from './gl-base.js'
 import { GLSL } from './glsl-lib.js'
 
-const SHADER = /* glsl */ `
+const SHADER = /* glsl */ `${GLSL.palette}
+
 // Shared gradient noise (issue #115). This saver is the worst case for the
 // value noise it replaces: 6 octaves of fBm meant the lattice grid compounded
 // across every octave, giving a visible axis-aligned structure that at
@@ -69,7 +70,7 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
 
   // Color palette (cosine gradient), rotated per activation.
   vec3 phase = vec3(0.0, 0.33, 0.67) + iSeed.x;
-  vec3 col = 0.5 + 0.5 * cos(6.2831 * (f + phase + 0.1 * iTime));
+  vec3 col = palettePerceptual(f + 0.1 * iTime, phase);
   col = mix(col, tintA(iSeed.y), clamp(length(q), 0.0, 1.0));
   col = mix(col, tintB(iSeed.z), clamp(r.x * r.x, 0.0, 1.0));
   col *= 0.7 + 0.6 * f;

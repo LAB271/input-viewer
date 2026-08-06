@@ -22,7 +22,7 @@
  * Randomising the *parameters* is what actually changes the shape.
  */
 import { createGLRuntime, createFullscreenPass, createPingPong, buildProgram, pointScale, particleSide, luminanceScale, fadeAlphaForHalfLife } from './gl-base.js'
-import { createUniformCache } from './glsl-lib.js'
+import { GLSL, createUniformCache } from './glsl-lib.js'
 import { createRng } from './seed.js'
 import { createPostChain } from './post-fx.js'
 
@@ -83,6 +83,7 @@ void main() {
 
 const DRAW_FRAG = `#version 300 es
 precision highp float;
+${GLSL.palette}
 in float vIdx;
 uniform float uTime;
 uniform float uLum;
@@ -100,7 +101,7 @@ void main() {
   // overlapping points still build sharp filaments rather than smearing.
   float softness = smoothstep(0.25, 0.0, r2);
 
-  vec3 col = 0.5 + 0.5 * cos(6.2831 * (vIdx * 0.5 + uTime * 0.03 + uPhase));
+  vec3 col = palettePerceptual(vIdx * 0.5 + uTime * 0.03, uPhase);
   // Dim + additive accumulation: brightness comes from many overlapping points
   // rather than any single one. uLum lifts it on big-room displays, where
   // ambient light raises the black floor this effect depends on (see #88).

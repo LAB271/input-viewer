@@ -11,10 +11,12 @@
  * Julia shape and morphed through the identical sequence.
  */
 import { createShaderScreensaver } from './gl-base.js'
+import { GLSL } from './glsl-lib.js'
 
-const SHADER = /* glsl */ `
+const SHADER = /* glsl */ `${GLSL.palette}
+
 vec3 palette(float t, vec3 phase) {
-  return 0.5 + 0.5 * cos(6.2831 * (t + phase));
+  return palettePerceptual(t, phase);
 }
 
 // Classic c values, each a visually distinct Julia morphology. Curated for the

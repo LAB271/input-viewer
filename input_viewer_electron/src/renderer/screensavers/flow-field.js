@@ -11,7 +11,8 @@
 import { createShaderScreensaver } from './gl-base.js'
 import { GLSL } from './glsl-lib.js'
 
-const SHADER = /* glsl */ `
+const SHADER = /* glsl */ `${GLSL.palette}
+
 ${GLSL.simplex2d}
 ${GLSL.curl2d}
 
@@ -54,7 +55,7 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
   vec2 vdir = flow(p * fscale, t);
   vec3 phase = vec3(0.0, 0.33, 0.67) + iSeed.x;
   float hue = atan(vdir.y, vdir.x) / 6.2831 + 0.5 + 0.05 * iTime;
-  vec3 col = 0.5 + 0.5 * cos(6.2831 * (hue + phase));
+  vec3 col = palettePerceptual(hue, phase);
   col *= streak;
 
   // Subtle dark vignette.

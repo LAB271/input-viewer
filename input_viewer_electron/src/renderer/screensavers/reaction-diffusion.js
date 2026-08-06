@@ -13,7 +13,7 @@
  * single hardcoded pair.
  */
 import { createGLRuntime, createFullscreenPass, createPingPong } from './gl-base.js'
-import { createUniformCache } from './glsl-lib.js'
+import { GLSL, createUniformCache } from './glsl-lib.js'
 import { createRng } from './seed.js'
 
 const SIM_FRAG = `#version 300 es
@@ -60,6 +60,7 @@ void main() {
 
 const DISPLAY_FRAG = `#version 300 es
 precision highp float;
+${GLSL.palette}
 uniform sampler2D uState;
 uniform vec2 uResolution;  // canvas size in pixels
 uniform float uTime;
@@ -67,7 +68,7 @@ uniform vec3 uPhase;
 out vec4 outColor;
 
 vec3 palette(float t) {
-  return 0.5 + 0.5 * cos(6.2831 * (t + uPhase));
+  return palettePerceptual(t, uPhase);
 }
 
 void main() {

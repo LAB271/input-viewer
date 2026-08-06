@@ -126,6 +126,7 @@ void main() {
 
 const DRAW_FRAG = `#version 300 es
 precision highp float;
+${GLSL.palette}
 in float vSpeed;
 in float vAlpha;
 in float vPhase;
@@ -144,7 +145,7 @@ void main() {
   // flat hue. Normalised through tanh so the palette does not saturate the
   // moment the field happens to be energetic.
   float t = tanh(vSpeed * 0.35) + vPhase * 0.12;
-  vec3 col = 0.5 + 0.5 * cos(6.2831 * (t + uPhase));
+  vec3 col = palettePerceptual(t, uPhase);
 
   // Additive on black, no clamp: the post chain tonemaps, so dense braids
   // carry real information above 1.0 instead of clipping to white.

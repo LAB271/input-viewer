@@ -135,6 +135,7 @@ void main() {
 
 const DRAW_FRAG = `#version 300 es
 precision highp float;
+${GLSL.palette}
 in float vDir;
 in vec2 vQuad;
 uniform vec3 uPhase;
@@ -152,7 +153,7 @@ void main() {
   float nose = mix(0.55, 1.0, alongTravel);
 
   float hue = vDir / 6.2831 + 0.5;
-  vec3 col = 0.5 + 0.5 * cos(6.2831 * (hue + uPhase));
+  vec3 col = palettePerceptual(hue, uPhase);
   outColor = vec4(col * nose * edge, 0.9);
 }`
 
