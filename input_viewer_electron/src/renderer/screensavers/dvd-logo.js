@@ -6,8 +6,14 @@
  * The logo bounces around the screen and shifts hue on each wall contact.
  * Bounce logic uses the velocity-direction guard from the #27 fix so a wall
  * contact only triggers one hue shift even if bounds change mid-flight.
+ *
+ * Per-activation variation: start position, travel direction, speed, size and
+ * starting hue. The bounce is deterministic once those are fixed, so without
+ * this every activation traced the same path off the same walls in the same
+ * order -- and, being the fallback saver, it is the one seen most often.
  */
 import { createGLRuntime } from './gl-base.js'
+import { createRng } from './seed.js'
 import logoUrl from '../logo.png'
 
 const VERT = `#version 300 es
@@ -49,19 +55,36 @@ const DVD_HUES = [0.0, 1.047, 2.094, 3.142, 4.189, 5.236] // 0,60,...300 deg in 
 
 export default {
   name: 'DVD Logo',
-  create(canvas) {
+  create(canvas, seedValue) {
     let runtime = null
     let gl = null
     let program = null
     let vao = null
     let texture = null
     let loc = {}
+
+    // Per-activation variation. The bounce is fully deterministic once the
+    // start position, direction and speed are fixed, so previously every
+    // activation traced the identical path and hit the walls in the identical
+    // order -- the logo always left (0.4, 0.4) heading down-right at 0.12/s in
+    // an unrotated hue.
+    const rng = createRng(seedValue)
+    // Start away from the edges so the first bounce is not immediate.
+    const startX = rng.range(0.25, 0.75)
+    const startY = rng.range(0.25, 0.75)
+    // Speed varies mildly; the direction is a random quadrant. Both components
+    // keep a floor of ~0.07 so the logo never crawls along one axis, which
+    // would read as it being stuck rather than travelling.
+    const speed = rng.range(0.09, 0.16)
+    const angle = rng.range(0.35, 1.22) // ~20..70 deg, avoids near-axis paths
+
     // Motion state (normalized [0,1] coordinates, origin top-left).
     const st = {
-      x: 0.4, y: 0.4,
-      vx: 0.12, vy: 0.12, // per second
-      logoW: 0.12, logoH: 0.07,
-      hueIndex: 0,
+      x: startX, y: startY,
+      vx: Math.cos(angle) * speed * rng.sign(),
+      vy: Math.sin(angle) * speed * rng.sign(), // per second
+      logoW: rng.range(0.10, 0.15), logoH: 0.07,
+      hueIndex: rng.int(0, DVD_HUES.length - 1),
       lastTime: 0
     }
 

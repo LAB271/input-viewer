@@ -5,8 +5,22 @@
  * thousands of white points flow through a gently rotating noise field and
  * twinkle, leaving soft trails. Calm and minimal (contrast to the colorful
  * Particle Swarm).
+ *
+ * Per-activation variation: the flow field is sampled at a random spatial
+ * offset and scale, and the flow speed, drift direction/magnitude and twinkle
+ * rate are all perturbed.
+ *
+ * The spatial offset is the one that matters. The field is a hash-based value
+ * noise evaluated at the particle's own position, so with uTime starting at 0
+ * on every start() the particles always fell into the same eddies in the same
+ * places. A time offset alone would not fix that: uTime only translates the
+ * field along its animation axis, so it slides the *same* eddy pattern past.
+ * Displacing the sample point in x/y lands on genuinely different noise.
+ *
+ * Deliberately monochrome -- there is no palette here and none should be added.
  */
 import { createGLRuntime, createFullscreenPass, createPingPong, buildProgram, pointScale, particleSide } from './gl-base.js'
+import { createRng } from './seed.js'
 
 const SIDE = 256 // 65,536 particles at 1080p
 // Scales up with canvas area; capped so the wall costs ~147k particles
@@ -19,6 +33,10 @@ uniform sampler2D uState;  // xy=pos [-1,1], z=seedphase, w=life
 uniform vec2 uTexel;
 uniform float uTime;
 uniform float uDt;
+uniform vec2 uFieldOffset; // where in the noise field this activation samples
+uniform float uFieldScale;
+uniform float uFlowSpeed;
+uniform vec2 uDrift;       // gentle constant drift, mostly downward
 out vec4 outState;
 
 float hash(vec2 p){ p=fract(p*vec2(123.34,456.21)); p+=dot(p,p+45.32); return fract(p.x*p.y); }
@@ -40,9 +58,9 @@ void main(){
   float phase = s.z;
   float life = s.w;
 
-  vec2 v = flow(pos*1.2, uTime*0.05);
-  pos += v * uDt * 0.6;
-  pos += vec2(0.0, -0.02) * uDt; // gentle drift
+  vec2 v = flow(pos*uFieldScale + uFieldOffset, uTime*0.05);
+  pos += v * uDt * uFlowSpeed;
+  pos += uDrift * uDt; // gentle drift
   life -= uDt * 0.15;
 
   // Respawn dead/off-screen particles at a random edge.
@@ -62,6 +80,7 @@ uniform sampler2D uState;
 uniform float uSide;
 uniform float uTime;
 uniform float uScale;
+uniform float uTwinkle;
 out float vAlpha;
 void main(){
   int id = gl_VertexID;
@@ -70,7 +89,7 @@ void main(){
   vec2 uv = (vec2(float(x), float(y)) + 0.5) / uSide;
   vec4 s = texture(uState, uv);
   // Twinkle from per-particle phase; fade in/out with life.
-  float tw = 0.5 + 0.5 * sin(uTime * 3.0 + s.z * 6.2831);
+  float tw = 0.5 + 0.5 * sin(uTime * uTwinkle + s.z * 6.2831);
   float lifeFade = smoothstep(0.0, 0.2, s.w) * smoothstep(1.3, 0.6, s.w);
   vAlpha = tw * lifeFade;
   gl_Position = vec4(s.xy, 0.0, 1.0);
@@ -98,7 +117,7 @@ void main(){ outColor = vec4(0.0, 0.0, 0.0, 0.12); }`
 
 export default {
   name: 'White Particles',
-  create(canvas) {
+  create(canvas, seedValue) {
     let runtime = null, gl = null
     let sim = null, fade = null, drawProg = null, pp = null, vao = null
     let last = 0
@@ -107,13 +126,36 @@ export default {
     let side = SIDE
     let count = SIDE * SIDE
 
+    // Drawn here rather than in start() so a start/stop/start cycle keeps the
+    // same look; only a fresh create() picks a new one.
+    const rng = createRng(seedValue)
+    // 0..48 in each axis. The noise is on a unit lattice and the field is
+    // sampled at roughly unit scale, so even a few units lands in unrelated
+    // cells; 48 is bounded well short of where float precision in the
+    // fract()-based hash starts to band.
+    const fieldOffset = [rng.range(0, 48), rng.range(0, 48)]
+    // Around the tuned 1.2. Lower gives broad lazy sweeps, higher a busier,
+    // more turbulent field -- both read as "calm drift", which is the point.
+    const fieldScale = rng.range(0.95, 1.5)
+    const flowSpeed = rng.range(0.45, 0.8)
+    // Drift is nominally straight down at 0.02. Tilting it up to ~25 degrees
+    // off vertical makes the field feel like it is in a different breeze each
+    // time; a full 360 degrees would sometimes drift *upwards*, which reads as
+    // rising embers rather than the intended settling snow.
+    const driftAngle = -Math.PI / 2 + rng.around(0, 0.44)
+    const driftMag = rng.range(0.012, 0.03)
+    const drift = [Math.cos(driftAngle) * driftMag, Math.sin(driftAngle) * driftMag]
+    // Around the tuned 3.0. The floor keeps the twinkle visible rather than a
+    // slow breathe; the ceiling keeps it from strobing.
+    const twinkle = rng.range(2.2, 4.0)
+
     function seed() {
       const data = new Float32Array(count * 4)
       for (let i = 0; i < count; i++) {
-        data[i * 4 + 0] = Math.random() * 2 - 1
-        data[i * 4 + 1] = Math.random() * 2 - 1
-        data[i * 4 + 2] = Math.random()           // phase
-        data[i * 4 + 3] = 0.2 + Math.random()     // life
+        data[i * 4 + 0] = rng.range(-1, 1)
+        data[i * 4 + 1] = rng.range(-1, 1)
+        data[i * 4 + 2] = rng.next()              // phase
+        data[i * 4 + 3] = 0.2 + rng.next()        // life
       }
       return data
     }
@@ -148,6 +190,10 @@ export default {
             g.uniform2f(g.getUniformLocation(p, 'uTexel'), 1 / side, 1 / side)
             g.uniform1f(g.getUniformLocation(p, 'uTime'), time)
             g.uniform1f(g.getUniformLocation(p, 'uDt'), dt)
+            g.uniform2f(g.getUniformLocation(p, 'uFieldOffset'), fieldOffset[0], fieldOffset[1])
+            g.uniform1f(g.getUniformLocation(p, 'uFieldScale'), fieldScale)
+            g.uniform1f(g.getUniformLocation(p, 'uFlowSpeed'), flowSpeed)
+            g.uniform2f(g.getUniformLocation(p, 'uDrift'), drift[0], drift[1])
           })
           pp.swap()
 
@@ -170,6 +216,7 @@ export default {
           // 1.0 floor would overstate how small the points actually are and
           // inflate the large-display floor multiplier.
           gl.uniform1f(gl.getUniformLocation(drawProg.program, 'uScale'), pointScale(canvas, 2.0))
+          gl.uniform1f(gl.getUniformLocation(drawProg.program, 'uTwinkle'), twinkle)
           gl.drawArrays(gl.POINTS, 0, count)
         })
       },

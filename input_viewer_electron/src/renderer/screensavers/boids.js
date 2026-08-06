@@ -8,8 +8,22 @@
  *
  * Flock size is kept modest (a few thousand) because each boid samples many
  * others per frame; that is plenty for a convincing screensaver.
+ *
+ * Per-activation variation: the three flocking weights, both neighbourhood
+ * radii, the centre pull, the speed limits and the palette phase are perturbed.
+ *
+ * Unlike most of the savers, this one already had genuine per-run variation --
+ * the neighbour sampling is stochastic and the initial positions random, so the
+ * murmuration never traced the same path twice. What it lacked was variation in
+ * *character*: with the weights fixed, every activation settled into the same
+ * flock temperament, a single tight fast-turning swarm. Moving the weights and
+ * radii is what gives one run loose scattered bands and the next a dense
+ * hurrying knot. The bounds below are more than cosmetic: separation must stay
+ * inside the alignment radius and the minimum speed below the maximum, or the
+ * flocking degenerates into a jitter or a frozen lattice.
  */
 import { createGLRuntime, createFullscreenPass, createPingPong, buildProgram, pointScale, particleSide } from './gl-base.js'
+import { createRng } from './seed.js'
 
 const SIDE = 64 // 64x64 = 4096 boids
 // Scales up with canvas area; capped to bound worst-case GPU cost, so very
@@ -29,6 +43,10 @@ uniform vec2 uTexel;
 uniform float uSide;
 uniform float uDt;
 uniform float uFrame;
+uniform vec2 uRadii;    // x = separation radius, y = alignment/cohesion radius
+uniform vec3 uWeights;  // separation, alignment, cohesion
+uniform float uCenter;  // pull toward the origin
+uniform vec2 uSpeed;    // x = max, y = min
 out vec4 outState;
 
 const int SAMPLES = ${SAMPLES};
@@ -55,29 +73,29 @@ void main() {
     vec2 d = o.xy - pos;
     float dist = length(d);
     if (dist < 0.0001) continue;
-    if (dist < 0.06) sep -= d / dist * (0.06 - dist);
-    if (dist < 0.18) {
+    if (dist < uRadii.x) sep -= d / dist * (uRadii.x - dist);
+    if (dist < uRadii.y) {
       ali += o.zw;
       coh += o.xy;
       count += 1.0;
     }
   }
 
-  vec2 acc = sep * 1.5;
+  vec2 acc = sep * uWeights.x;
   if (count > 0.0) {
     ali /= count;
     coh /= count;
-    acc += (ali - vel) * 0.5;
-    acc += (coh - pos) * 0.4;
+    acc += (ali - vel) * uWeights.y;
+    acc += (coh - pos) * uWeights.z;
   }
   // Gentle pull to center so the flock stays on-screen.
-  acc += -pos * 0.05;
+  acc += -pos * uCenter;
 
   vel += acc * uDt;
   float sp = length(vel);
-  float maxSp = 0.5;
+  float maxSp = uSpeed.x;
   if (sp > maxSp) vel = vel / sp * maxSp;
-  if (sp < 0.15 && sp > 0.0) vel = vel / sp * 0.15;
+  if (sp < uSpeed.y && sp > 0.0) vel = vel / sp * uSpeed.y;
   pos += vel * uDt;
 
   // Soft wrap.
@@ -107,12 +125,13 @@ void main() {
 const DRAW_FRAG = `#version 300 es
 precision highp float;
 in float vDir;
+uniform vec3 uPhase;
 out vec4 outColor;
 void main() {
   vec2 d = gl_PointCoord - 0.5;
   if (dot(d, d) > 0.25) discard;
   float hue = vDir / 6.2831 + 0.5;
-  vec3 col = 0.5 + 0.5 * cos(6.2831 * (hue + vec3(0.0, 0.33, 0.67)));
+  vec3 col = 0.5 + 0.5 * cos(6.2831 * (hue + uPhase));
   outColor = vec4(col, 0.9);
 }`
 
@@ -123,7 +142,7 @@ void main() { outColor = vec4(0.0, 0.0, 0.0, 0.08); }`
 
 export default {
   name: 'Boids',
-  create(canvas) {
+  create(canvas, seedValue) {
     let runtime = null, gl = null
     let sim = null, fade = null, drawProg = null, pp = null, vao = null
     let last = 0, frame = 0
@@ -132,12 +151,34 @@ export default {
     let side = SIDE
     let COUNT = side * side
 
+    // Drawn here rather than in start() so a start/stop/start cycle keeps the
+    // same temperament; only a fresh create() picks a new one.
+    const rng = createRng(seedValue)
+    // The two radii are drawn from deliberately disjoint ranges rather than
+    // perturbed independently, which is how separation is *guaranteed* to stay
+    // strictly inside the alignment neighbourhood. If they cross, every
+    // neighbour that pushes a boid away also pulls it in, the two forces cancel
+    // and the flock stops flocking.
+    const sepRadius = rng.range(0.045, 0.08)   // near the tuned 0.06
+    const aliRadius = rng.range(0.14, 0.24)    // near the tuned 0.18
+    // Separation must stay the dominant force or the flock collapses into a
+    // single point; alignment and cohesion stay well under it.
+    const weights = [rng.range(1.2, 1.9), rng.range(0.35, 0.7), rng.range(0.28, 0.55)]
+    // Centre pull near 0.05: too little and the flock wanders off through the
+    // wrap seam, too much and it becomes a ball pinned to the middle.
+    const center = rng.range(0.035, 0.07)
+    // Same disjoint-ranges trick as the radii: min must stay strictly below
+    // max, or the two clamps fight and the velocity oscillates every frame.
+    const maxSpeed = rng.range(0.4, 0.62)      // near the tuned 0.5
+    const minSpeed = rng.range(0.1, 0.22)      // near the tuned 0.15
+    const phase = [rng.next(), rng.next() + 0.33, rng.next() + 0.67]
+
     function seed() {
       const data = new Float32Array(COUNT * 4)
       for (let i = 0; i < COUNT; i++) {
-        const a = Math.random() * Math.PI * 2
-        data[i * 4 + 0] = Math.random() * 2 - 1
-        data[i * 4 + 1] = Math.random() * 2 - 1
+        const a = rng.angle()
+        data[i * 4 + 0] = rng.range(-1, 1)
+        data[i * 4 + 1] = rng.range(-1, 1)
         data[i * 4 + 2] = Math.cos(a) * 0.3
         data[i * 4 + 3] = Math.sin(a) * 0.3
       }
@@ -176,6 +217,10 @@ export default {
             g.uniform1f(g.getUniformLocation(p, 'uSide'), side)
             g.uniform1f(g.getUniformLocation(p, 'uDt'), dt)
             g.uniform1f(g.getUniformLocation(p, 'uFrame'), frame)
+            g.uniform2f(g.getUniformLocation(p, 'uRadii'), sepRadius, aliRadius)
+            g.uniform3f(g.getUniformLocation(p, 'uWeights'), weights[0], weights[1], weights[2])
+            g.uniform1f(g.getUniformLocation(p, 'uCenter'), center)
+            g.uniform2f(g.getUniformLocation(p, 'uSpeed'), maxSpeed, minSpeed)
           })
           pp.swap()
 
@@ -192,6 +237,7 @@ export default {
           gl.uniform1i(gl.getUniformLocation(drawProg.program, 'uState'), 0)
           gl.uniform1f(gl.getUniformLocation(drawProg.program, 'uSide'), side)
           gl.uniform1f(gl.getUniformLocation(drawProg.program, 'uScale'), pointScale(canvas, 2.5))
+          gl.uniform3f(gl.getUniformLocation(drawProg.program, 'uPhase'), phase[0], phase[1], phase[2])
           gl.drawArrays(gl.POINTS, 0, COUNT)
         })
       },

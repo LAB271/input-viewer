@@ -40,11 +40,20 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
   vec2 res = iResolution.xy;
   vec2 uv = (fragCoord - 0.5 * res) / res.y;
 
-  float power = 6.0 + 2.0 * sin(iTime * 0.2);
+  // Mandelbulb exponent sweep, entering at a random phase so the bulb's
+  // morphology at activation differs. Range kept within 4..8 -- below 3 the
+  // surface loses its lobed structure, above ~9 the detail outruns the fixed
+  // march budget and produces acne.
+  float powBase = 5.5 + iSeed.x * 1.2;
+  float power = powBase + 2.0 * sin(iTime * 0.2 + iSeed.y * 6.2831);
 
-  // Orbiting camera.
-  float a = iTime * 0.15;
-  vec3 ro = vec3(2.4 * cos(a), 0.6 * sin(iTime * 0.1), 2.4 * sin(a));
+  // Orbiting camera. The azimuth offset is the key variation: previously the
+  // camera always started at exactly (2.4, 0, 0), so every activation opened on
+  // the identical view of the fractal.
+  float a = iTime * 0.15 + iSeed.z * 6.2831;
+  // Orbit radius varies slightly, changing how much of the frame the bulb fills.
+  float radius = 2.25 + iSeed.w * 0.45;
+  vec3 ro = vec3(radius * cos(a), 0.6 * sin(iTime * 0.1 + iSeed.w * 6.2831), radius * sin(a));
   vec3 target = vec3(0.0);
   vec3 fwd = normalize(target - ro);
   vec3 right = normalize(cross(vec3(0.0, 1.0, 0.0), fwd));
@@ -67,10 +76,14 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
   vec3 col = vec3(0.0);
   if (hit) {
     vec3 n = calcNormal(p, power);
-    vec3 lightDir = normalize(vec3(0.8, 0.9, -0.4));
+    // Light azimuth varies; elevation stays high so the bulb is never lit
+    // flatly from behind, which would silhouette it into near-blackness.
+    float la = iSeed.y * 6.2831;
+    vec3 lightDir = normalize(vec3(cos(la), 0.9, sin(la)));
     float diff = max(dot(n, lightDir), 0.0);
     float fres = pow(1.0 - max(dot(n, -rd), 0.0), 3.0);
-    vec3 base = 0.5 + 0.5 * cos(6.2831 * (length(p) * 0.6 + vec3(0.0, 0.33, 0.67) + 0.05 * iTime));
+    vec3 phase = vec3(0.0, 0.33, 0.67) + iSeed.x;
+    vec3 base = 0.5 + 0.5 * cos(6.2831 * (length(p) * 0.6 + phase + 0.05 * iTime));
     col = base * (0.2 + diff) + fres * vec3(0.4, 0.6, 1.0);
   }
   // Volumetric-ish glow toward the fractal surface.

@@ -19,9 +19,12 @@ input_viewer_electron/
 │       └── screensavers/      # No-signal screensavers + WebGL helpers
 │           ├── registry.js    # Screensaver list and lifecycle
 │           ├── gl-base.js     # Shared GL runtime, pointScale/particleSide
-│           └── preview.html   # Standalone preview harness
+│           ├── seed.js        # Per-activation RNG (wall-clock seeded)
+│           ├── preview.html   # Standalone preview harness
+│           └── shadercheck.html # Headless shader-compile harness
 ├── scripts/
 │   ├── screensaver-preview.mjs # `npm run screensaver` dev server
+│   ├── shader-check.mjs       # `npm run shadercheck` GPU compile check
 │   └── test-summary.mjs       # Renders JUnit as a CI job summary
 ├── test/                      # vitest suites (see Testing below)
 ├── build/                     # App icons and entitlements
@@ -52,9 +55,42 @@ npm run build:win    # Build Windows installer
 
 # Preview a screensaver in a browser with a real WebGL2 context.
 # --wall emulates the 6000x1200 videowall; W toggles it, L cycles an
-# ambient-light washout overlay.
+# ambient-light washout overlay, S draws a new random seed.
 npm run screensaver -- white-particles --wall
+
+# Pin a seed to reproduce an exact look (any string or integer).
+# The seed used is logged to the console on every activation.
+open 'http://localhost:5180/preview.html?seed=abc#plasma'
+
+# Compile every screensaver's shaders on a real GPU, headlessly.
+npm run shadercheck
 ```
+
+## Screensaver randomness
+
+Every screensaver varies per activation, seeded from the wall clock
+(`screensavers/seed.js`). This matters because `gl-base.js` resets `iTime` and
+`iFrame` to 0 on every `start()`, so a saver derived purely from those replays
+bit-for-bit — 7 of the 12 used to do exactly that.
+
+- `create(canvas, seed)` is the module contract. `seed` is optional; omitted
+  means "draw from the clock". `registry.js` resolves and **logs** it, so a run
+  can be reproduced by passing the logged value back.
+- Pure fragment-shader savers get `uniform vec4 iSeed` (four uncorrelated
+  randoms in `[0,1)`, fixed for the activation) declared in `FRAGMENT_HEADER`.
+  Use it for phases, targets and palette rotation.
+- JS-side savers use `createRng(seed)` — `range/around/int/pick/chance/sign/
+  phase`. Build the RNG in `create()`, not `start()`, so choices survive a
+  start/stop cycle.
+- **Perturb, don't randomise.** These constants were tuned. Where a bound is
+  load-bearing (`sep < ali` radius in boids, feed/kill regimes in
+  reaction-diffusion, zoom depth vs float precision in the fractals) say so in a
+  comment — several ranges are deliberately tight or drawn from curated lists
+  because most of the parameter space looks broken.
+- The no-signal screen **rotates every 10 minutes**
+  (`state.screensaverRotateDelay`) and never repeats the previous pick. Without
+  rotation a fresh seed would be seen once per no-signal event, then frozen for
+  hours.
 
 ## Testing
 
@@ -74,6 +110,25 @@ module scope, guarded by `globalThis.__INPUT_VIEWER_NO_AUTOSTART__` so tests
 can import it without booting the app. `test/helpers/renderer-dom.js` derives
 the required element ids from `renderer.js` source, so the fixture cannot
 silently drift.
+
+**No shader is compiled by `npm test`** — there is no WebGL2 context in the node
+environment, and headless-gl would add a native build dependency to `npm ci`.
+The split is:
+
+- `test/screensaver-seed.test.js` covers what is checkable without a driver:
+  the RNG's distribution and reproducibility, `pickRandomIndex` never repeating,
+  and static GLSL checks (balanced braces/parens, malformed numeric literals,
+  valid `iSeed` swizzles, every shader saver actually using `iSeed`).
+- `npm run shadercheck` drives all 12 savers × 5 seeds through headless Chrome
+  against a real GPU, so the driver genuinely compiles and links every shader.
+
+The shadercheck harness calls `create()`/`start()` **directly rather than
+through `registry.startScreensaver()`**. The registry deliberately swallows a
+start failure and falls back to the DVD logo — right for production, but it
+makes failures invisible to a caller. An earlier version of the harness used the
+registry and cheerfully reported 60/60 passing while the driver was rejecting a
+shader; if you touch that file, re-verify it by injecting a type error and
+confirming a non-zero exit.
 
 Node 24+ is required: Electron's own floor is `>= 22.12.0` and jsdom 30
 needs `^24.15.0`. Both workflows pin `node-version: '24'`; raise them
