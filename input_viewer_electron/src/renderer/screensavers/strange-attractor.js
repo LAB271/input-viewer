@@ -21,7 +21,7 @@
  * bought about one second of differing transient smear and nothing after.
  * Randomising the *parameters* is what actually changes the shape.
  */
-import { createGLRuntime, createFullscreenPass, createPingPong, buildProgram, pointScale, particleSide, luminanceScale } from './gl-base.js'
+import { createGLRuntime, createFullscreenPass, createPingPong, buildProgram, pointScale, particleSide, luminanceScale, fadeAlphaForHalfLife } from './gl-base.js'
 import { createRng } from './seed.js'
 
 const SIDE = 256 // 65,536 points
@@ -96,10 +96,18 @@ void main() {
   outColor = vec4(min(col * 0.5 * uLum, vec3(1.0)), 0.12);
 }`
 
+// Trail fade. The alpha is supplied per frame rather than baked in, so trail
+// length is wall-clock instead of frame-count -- a constant per-frame alpha
+// makes trails half as long at 120Hz as at 60Hz (issue #113).
 const FADE_FRAG = `#version 300 es
 precision highp float;
+uniform float uFadeAlpha;
 out vec4 outColor;
-void main() { outColor = vec4(0.0, 0.0, 0.0, 0.04); }`
+void main() { outColor = vec4(0.0, 0.0, 0.0, uFadeAlpha); }`
+
+// Chosen to reproduce the previous look at 60Hz, where the fixed 0.04 alpha
+// decayed a trail to half brightness in ~0.28s.
+const TRAIL_HALF_LIFE_S = 0.283
 
 export default {
   name: 'Strange Attractor',
@@ -154,7 +162,7 @@ export default {
         gl.clearColor(0, 0, 0, 1)
         gl.clear(gl.COLOR_BUFFER_BIT)
 
-        runtime.start((time) => {
+        runtime.start((time, frameCount, glCtx, rt) => {
           // Slowly morphing Clifford parameters, drifting around this
           // activation's family centre with per-parameter rate and phase.
           const a = family.a + drift[0].amp * Math.sin(time * drift[0].rate + drift[0].phase)
@@ -180,7 +188,10 @@ export default {
           gl.viewport(0, 0, canvas.width, canvas.height)
           gl.enable(gl.BLEND)
           gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA)
-          fade.draw()
+          fade.draw((g, p) => {
+            g.uniform1f(g.getUniformLocation(p, 'uFadeAlpha'),
+              fadeAlphaForHalfLife(rt.dt, TRAIL_HALF_LIFE_S))
+          })
           gl.blendFunc(gl.SRC_ALPHA, gl.ONE)
           gl.useProgram(drawProg.program)
           gl.bindVertexArray(vao)

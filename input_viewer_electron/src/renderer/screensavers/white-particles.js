@@ -19,7 +19,7 @@
  *
  * Deliberately monochrome -- there is no palette here and none should be added.
  */
-import { createGLRuntime, createFullscreenPass, createPingPong, buildProgram, pointScale, particleSide } from './gl-base.js'
+import { createGLRuntime, createFullscreenPass, createPingPong, buildProgram, pointScale, particleSide, fadeAlphaForHalfLife } from './gl-base.js'
 import { createRng } from './seed.js'
 
 const SIDE = 256 // 65,536 particles at 1080p
@@ -110,17 +110,23 @@ void main(){
   outColor = vec4(vec3(1.0), vAlpha * soft); // white
 }`
 
+// Trail fade. Alpha arrives per frame so trail length is wall-clock rather
+// than frame-count (issue #113).
 const FADE_FRAG = `#version 300 es
 precision highp float;
+uniform float uFadeAlpha;
 out vec4 outColor;
-void main(){ outColor = vec4(0.0, 0.0, 0.0, 0.12); }`
+void main(){ outColor = vec4(0.0, 0.0, 0.0, uFadeAlpha); }`
+
+// Reproduces the previous look at 60Hz, where the fixed 0.12 alpha halved a
+// trail's brightness in ~0.09s.
+const TRAIL_HALF_LIFE_S = 0.090
 
 export default {
   name: 'White Particles',
   create(canvas, seedValue) {
     let runtime = null, gl = null
     let sim = null, fade = null, drawProg = null, pp = null, vao = null
-    let last = 0
     // Resolved in start(), once createGLRuntime has sized the canvas: the
     // particle count scales with canvas area, so it cannot be known here.
     let side = SIDE
@@ -174,11 +180,10 @@ export default {
         fade = createFullscreenPass(gl, FADE_FRAG)
         drawProg = buildProgram(gl, DRAW_VERT, DRAW_FRAG)
         vao = gl.createVertexArray()
-        last = 0
 
-        runtime.start((time) => {
-          const dt = Math.min(time - last, 0.05) || 0.016
-          last = time
+        runtime.start((time, frameCount, glCtx, rt) => {
+          // Runtime owns the clamped frame delta now (issue #113).
+          const dt = rt.dt
 
           gl.disable(gl.BLEND)
           gl.bindFramebuffer(gl.FRAMEBUFFER, pp.write.fbo)
@@ -202,7 +207,10 @@ export default {
           // Fade for soft trails, then additive white points.
           gl.enable(gl.BLEND)
           gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA)
-          fade.draw()
+          fade.draw((g, p) => {
+            g.uniform1f(g.getUniformLocation(p, 'uFadeAlpha'),
+              fadeAlphaForHalfLife(dt, TRAIL_HALF_LIFE_S))
+          })
           gl.blendFunc(gl.SRC_ALPHA, gl.ONE)
           gl.useProgram(drawProg.program)
           gl.bindVertexArray(vao)

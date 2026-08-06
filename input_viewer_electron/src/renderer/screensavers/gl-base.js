@@ -29,6 +29,12 @@
  */
 import { createRng } from './seed.js'
 
+// Frame-delta clamping. MAX_DT caps how far a simulation can advance in one
+// step, so a stall (hidden tab, GPU hitch) cannot explode it; FALLBACK_DT
+// covers the first frame, where there is no previous timestamp to difference.
+const MAX_DT = 0.05
+const FALLBACK_DT = 0.016
+
 const QUAD_VERTEX_SHADER = `#version 300 es
 in vec2 aPosition;
 void main() {
@@ -116,6 +122,8 @@ export function createGLRuntime(canvas) {
   let startTime = 0
   let frame = 0
   let onFrame = null
+  let lastTime = 0
+  let dt = FALLBACK_DT
 
   function resize() {
     const dpr = Math.min(window.devicePixelRatio || 1, 2)
@@ -186,10 +194,17 @@ export function createGLRuntime(canvas) {
     onFrame = cb
     startTime = performance.now()
     frame = 0
+    lastTime = 0
+    dt = FALLBACK_DT
     resize()
     const loop = () => {
       resize()
       const time = (performance.now() - startTime) / 1000
+      // Clamp so a stall (tab hidden, GPU hitch, first frame) cannot advance a
+      // simulation by a huge step and blow it up. Every simulation saver used
+      // to hand-roll this identical line; now the runtime owns it.
+      dt = Math.min(time - lastTime, MAX_DT) || FALLBACK_DT
+      lastTime = time
       if (onFrame) onFrame(time, frame, gl, runtime)
       frame++
       rafId = requestAnimationFrame(loop)
@@ -219,7 +234,14 @@ export function createGLRuntime(canvas) {
     start,
     stop,
     destroy,
-    get frame() { return frame }
+    get frame() { return frame },
+    /**
+     * Seconds since the previous frame, clamped. Read this instead of
+     * differencing `time` yourself: every simulation and every trail length
+     * should be wall-clock so the screensaver looks the same on a 60Hz desk
+     * monitor and a 120Hz panel.
+     */
+    get dt() { return dt }
   }
   return runtime
 }
@@ -332,6 +354,100 @@ export function createFloatTarget(gl, w, h, data = null) {
   gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0)
   gl.bindFramebuffer(gl.FRAMEBUFFER, null)
   return { tex, fbo, w, h }
+}
+
+/**
+ * Off-screen HDR colour target for accumulating trails (issue #113).
+ *
+ * Distinct from createFloatTarget, which backs *simulation state* -- that wants
+ * RGBA32F and NEAREST for exact round-tripping of positions and velocities.
+ * This is for *colour*, where RGBA16F is the better trade: ample dynamic range
+ * for accumulation, half the bandwidth of 32F, and LINEAR-filterable so a later
+ * bloom/downsample chain can sample it (issue #112).
+ *
+ * Why accumulate off-screen at all: the default framebuffer is 8-bit, and
+ * additive trails there have two visible defects. Faint values quantise hard --
+ * a single attractor point contributes roughly 15/255 -- and, worse, fading by
+ * a small alpha has a quantisation floor. An 0.04-alpha black quad cannot take
+ * a channel below about 1/(255*0.04), so dim residue never reaches zero and
+ * every filament the saver has ever drawn leaves permanent ghosting.
+ *
+ * Falls back to null when EXT_color_buffer_float is unavailable, so callers can
+ * keep their 8-bit path rather than failing to start.
+ *
+ * @param {WebGL2RenderingContext} gl
+ * @param {number} w
+ * @param {number} h
+ * @returns {{tex: WebGLTexture, fbo: WebGLFramebuffer, w: number, h: number,
+ *            resize: (w: number, h: number) => void, destroy: () => void}|null}
+ */
+export function createHdrColorTarget(gl, w, h) {
+  if (!gl.getExtension('EXT_color_buffer_float')) return null
+  // Not fatal if absent: only a smooth-sampling bloom pass needs it, and the
+  // target itself still works with NEAREST.
+  gl.getExtension('OES_texture_float_linear')
+
+  const tex = gl.createTexture()
+  const fbo = gl.createFramebuffer()
+
+  function allocate(width, height) {
+    gl.bindTexture(gl.TEXTURE_2D, tex)
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, Math.max(1, width), Math.max(1, height),
+      0, gl.RGBA, gl.HALF_FLOAT, null)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo)
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+  }
+
+  allocate(w, h)
+
+  const target = {
+    tex,
+    fbo,
+    w: Math.max(1, w),
+    h: Math.max(1, h),
+    /** Reallocate on canvas resize. Discards accumulated contents. */
+    resize(width, height) {
+      const nw = Math.max(1, width)
+      const nh = Math.max(1, height)
+      if (nw === target.w && nh === target.h) return
+      target.w = nw
+      target.h = nh
+      allocate(nw, nh)
+    },
+    destroy() {
+      gl.deleteTexture(tex)
+      gl.deleteFramebuffer(fbo)
+    },
+  }
+  return target
+}
+
+/**
+ * Per-frame fade alpha for a target trail length, independent of frame rate.
+ *
+ * Trails were implemented as a fullscreen black quad at a *constant* per-frame
+ * alpha, which makes their length a function of refresh rate: the same 0.08 is
+ * twice as aggressive at 120Hz as at 60Hz, so a trail is half as long. For a
+ * videowall app that is exactly the wrong dependency.
+ *
+ * Framing it as a half-life instead: after `halfLifeSeconds` of wall clock, a
+ * trail should have decayed to half its brightness, whatever the frame rate.
+ * Per frame that means keeping 2^(-dt/halfLife), so the fade alpha is one minus
+ * that.
+ *
+ * @param {number} dt - seconds since the previous frame (runtime.dt)
+ * @param {number} halfLifeSeconds - time for a trail to halve in brightness
+ * @returns {number} alpha in [0,1] for the fade quad
+ */
+export function fadeAlphaForHalfLife(dt, halfLifeSeconds) {
+  if (!(halfLifeSeconds > 0)) return 1
+  const keep = Math.pow(2, -Math.max(0, dt) / halfLifeSeconds)
+  return Math.min(1, Math.max(0, 1 - keep))
 }
 
 /**

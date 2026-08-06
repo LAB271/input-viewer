@@ -22,7 +22,7 @@
  * inside the alignment radius and the minimum speed below the maximum, or the
  * flocking degenerates into a jitter or a frozen lattice.
  */
-import { createGLRuntime, createFullscreenPass, createPingPong, buildProgram, pointScale, particleSide } from './gl-base.js'
+import { createGLRuntime, createFullscreenPass, createPingPong, buildProgram, pointScale, particleSide, fadeAlphaForHalfLife } from './gl-base.js'
 import { createRng } from './seed.js'
 
 const SIDE = 64 // 64x64 = 4096 boids
@@ -40,7 +40,6 @@ const SIM_FRAG = `#version 300 es
 precision highp float;
 uniform sampler2D uState;  // xy=pos [-1,1], zw=vel
 uniform vec2 uTexel;
-uniform float uSide;
 uniform float uDt;
 uniform float uFrame;
 uniform vec2 uRadii;    // x = separation radius, y = alignment/cohesion radius
@@ -135,17 +134,24 @@ void main() {
   outColor = vec4(col, 0.9);
 }`
 
+// Trail fade. Alpha comes in per frame so trail length is wall-clock rather
+// than frame-count (issue #113).
 const FADE_FRAG = `#version 300 es
 precision highp float;
+uniform float uFadeAlpha;
 out vec4 outColor;
-void main() { outColor = vec4(0.0, 0.0, 0.0, 0.08); }`
+void main() { outColor = vec4(0.0, 0.0, 0.0, uFadeAlpha); }`
+
+// Reproduces the previous look at 60Hz, where the fixed 0.08 alpha halved a
+// trail's brightness in ~0.14s.
+const TRAIL_HALF_LIFE_S = 0.139
 
 export default {
   name: 'Boids',
   create(canvas, seedValue) {
     let runtime = null, gl = null
     let sim = null, fade = null, drawProg = null, pp = null, vao = null
-    let last = 0, frame = 0
+    let frame = 0
     // Resolved in start(), once createGLRuntime has sized the canvas: the
     // particle count scales with canvas area, so it cannot be known here.
     let side = SIDE
@@ -199,11 +205,13 @@ export default {
         fade = createFullscreenPass(gl, FADE_FRAG)
         drawProg = buildProgram(gl, DRAW_VERT, DRAW_FRAG)
         vao = gl.createVertexArray()
-        last = 0; frame = 0
+        frame = 0
 
-        runtime.start((time) => {
-          const dt = Math.min(time - last, 0.05) || 0.016
-          last = time; frame++
+        runtime.start((time, frameCount, glCtx, rt) => {
+          // The runtime now owns the clamped frame delta (issue #113); this
+          // file used to hand-roll the identical line.
+          const dt = rt.dt
+          frame++
 
           // Sim pass.
           gl.disable(gl.BLEND)
@@ -214,7 +222,6 @@ export default {
             g.bindTexture(g.TEXTURE_2D, pp.read.tex)
             g.uniform1i(g.getUniformLocation(p, 'uState'), 0)
             g.uniform2f(g.getUniformLocation(p, 'uTexel'), 1 / side, 1 / side)
-            g.uniform1f(g.getUniformLocation(p, 'uSide'), side)
             g.uniform1f(g.getUniformLocation(p, 'uDt'), dt)
             g.uniform1f(g.getUniformLocation(p, 'uFrame'), frame)
             g.uniform2f(g.getUniformLocation(p, 'uRadii'), sepRadius, aliRadius)
@@ -229,7 +236,16 @@ export default {
           gl.viewport(0, 0, canvas.width, canvas.height)
           gl.enable(gl.BLEND)
           gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA)
-          fade.draw()
+          fade.draw((g, p) => {
+            g.uniform1f(g.getUniformLocation(p, 'uFadeAlpha'),
+              fadeAlphaForHalfLife(dt, TRAIL_HALF_LIFE_S))
+          })
+          // Switch to additive before drawing. This was missing: the fade's
+          // SRC_ALPHA/ONE_MINUS_SRC_ALPHA stayed bound, so boids composited
+          // over each other instead of accumulating -- a dense cluster looked
+          // exactly as bright as a lone boid, contradicting the comment above
+          // and this saver's whole murmuration read (issue #116).
+          gl.blendFunc(gl.SRC_ALPHA, gl.ONE)
           gl.useProgram(drawProg.program)
           gl.bindVertexArray(vao)
           gl.activeTexture(gl.TEXTURE0)
