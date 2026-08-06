@@ -74,4 +74,7 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
 }
 `
 
-export default createShaderScreensaver('Mandelbrot', SHADER)
+// 4x supersampling (issue #116). Escape-time boundary filigree is the textbook
+// aliasing case, and the auto-zoom means it moves, so it shimmers. Smooth
+// iteration colouring already helps; this handles what it cannot.
+export default createShaderScreensaver('Mandelbrot', SHADER, { antialias: 4 })

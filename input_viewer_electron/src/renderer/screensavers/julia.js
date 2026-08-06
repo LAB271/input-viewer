@@ -68,4 +68,4 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
 }
 `
 
-export default createShaderScreensaver('Julia Set', SHADER)
+export default createShaderScreensaver('Julia Set', SHADER, { antialias: 4 })

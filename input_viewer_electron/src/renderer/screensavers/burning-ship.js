@@ -76,4 +76,4 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
 }
 `
 
-export default createShaderScreensaver('Burning Ship', SHADER)
+export default createShaderScreensaver('Burning Ship', SHADER, { antialias: 4 })

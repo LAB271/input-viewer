@@ -58,6 +58,76 @@ void main() {
   outColor = color;
 }`
 
+/**
+ * Supersampling footer: evaluates mainImage several times per pixel on a
+ * rotated grid and averages (issue #116).
+ *
+ * The `antialias: true` context flag is MSAA on the default framebuffer, which
+ * samples *polygon edges*. A fullscreen fragment shader has no polygon edges,
+ * so it does nothing at all for these savers -- raymarch has a hard-aliased
+ * fractal silhouette, and the escape-time fractals render boundary filigree
+ * that is the textbook aliasing case. Both *move*, so they shimmer frame to
+ * frame, which is far more objectionable than static aliasing.
+ *
+ * Supersampling is the blunt fix, but it is the right one here: these are
+ * procedural shaders with no geometry to derive analytic coverage from, and
+ * they are already fill-rate bound, so the cost is predictable.
+ *
+ * The offsets are a rotated grid rather than an axis-aligned one. Regular grids
+ * align with exactly the horizontal and vertical features that alias worst;
+ * rotating decorrelates the sample pattern from the image structure.
+ */
+/**
+ * Samples per pixel for a canvas, given a saver's requested maximum.
+ *
+ * Supersampling multiplies fragment cost directly: 4x samples is 4x the
+ * raymarch work. That is affordable at 1080p and reckless at 6000x1200, which
+ * is 3.5x the pixels -- 4x samples there would be ~14x the fragment work of a
+ * 1080p single-sampled frame.
+ *
+ * So the count comes *down* as the canvas grows. That is the opposite of
+ * pointScale and particleSide, and deliberately: those fix things that get
+ * worse with size, whereas here the pixels are already smaller in angular terms
+ * on a big display, so each one aliases less visibly while costing more to
+ * supersample.
+ *
+ * @param {HTMLCanvasElement} canvas
+ * @param {number} requested - the saver's preferred sample count
+ * @returns {number} samples to actually use
+ */
+function resolveSampleCount(canvas, requested) {
+  const pixels = (canvas.width || 1) * (canvas.height || 1)
+  const hd = 1920 * 1080
+  if (pixels > hd * 3) return Math.min(requested, 2)   // wall, 4K+
+  if (pixels > hd * 1.4) return Math.min(requested, 4) // 1440p
+  return requested
+}
+
+function makeSupersampleFooter(samples) {
+  // Rotated-grid offsets in [-0.5, 0.5] pixel space, by sample count.
+  const PATTERNS = {
+    2: [[-0.25, -0.25], [0.25, 0.25]],
+    4: [[-0.375, -0.125], [0.125, -0.375], [-0.125, 0.375], [0.375, 0.125]],
+    // 8-rook pattern: one sample per row and per column, so every horizontal
+    // and vertical slice through the pixel is covered exactly once.
+    8: [
+      [-0.4375, -0.1875], [-0.1875, 0.3125], [0.0625, -0.4375], [0.3125, 0.0625],
+      [-0.3125, 0.1875], [-0.0625, -0.3125], [0.1875, 0.4375], [0.4375, -0.0625],
+    ],
+  }
+  const offsets = PATTERNS[samples] || PATTERNS[4]
+  const body = offsets
+    .map(([dx, dy]) => `  mainImage(s, gl_FragCoord.xy + vec2(${dx.toFixed(4)}, ${dy.toFixed(4)}));\n  acc += s;`)
+    .join('\n')
+  return `
+void main() {
+  vec4 acc = vec4(0.0);
+  vec4 s = vec4(0.0);
+${body}
+  outColor = acc / ${offsets.length}.0;
+}`
+}
+
 function compileShader(gl, type, source) {
   const shader = gl.createShader(type)
   gl.shaderSource(shader, source)
@@ -264,7 +334,8 @@ export function createGLRuntime(canvas) {
  * @param {string} mainImageSource - GLSL providing mainImage()
  * @returns {{ name: string, create: (canvas: HTMLCanvasElement, seed?: number|string) => { start: Function, stop: Function } }}
  */
-export function createShaderScreensaver(name, mainImageSource) {
+export function createShaderScreensaver(name, mainImageSource, options = {}) {
+  const { antialias = 0 } = options
   return {
     name,
     create(canvas, seed) {
@@ -273,7 +344,14 @@ export function createShaderScreensaver(name, mainImageSource) {
       return {
         start() {
           runtime = createGLRuntime(canvas)
-          const fragmentSource = FRAGMENT_HEADER + mainImageSource + FRAGMENT_MAINIMAGE_FOOTER
+          // Sample count is decided once the canvas is sized, so a desk monitor
+          // can pay less than the wall. Aliasing scales with how large and how
+          // distant the display is, and so should the cost of fixing it.
+          const samples = antialias ? resolveSampleCount(canvas, antialias) : 0
+          const footer = samples > 1
+            ? makeSupersampleFooter(samples)
+            : FRAGMENT_MAINIMAGE_FOOTER
+          const fragmentSource = FRAGMENT_HEADER + mainImageSource + footer
           prog = runtime.createQuadProgram(fragmentSource)
           const rng = createRng(seed)
           prog.setSeed([rng.next(), rng.next(), rng.next(), rng.next()])

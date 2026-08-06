@@ -95,4 +95,9 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
 }
 `
 
-export default createShaderScreensaver('Raymarch Fractal', SHADER)
+// 4x supersampling (issue #116). This saver is the worst aliasing case in the
+// set: a hard fractal silhouette with no multi-sampling and no distance-based
+// edge softening, and the noisy DE edges shimmer frame to frame as the camera
+// orbits. The context's antialias flag does nothing here -- MSAA samples
+// polygon edges, and a fullscreen shader has none.
+export default createShaderScreensaver('Raymarch Fractal', SHADER, { antialias: 4 })
