@@ -23,7 +23,7 @@
  * flocking degenerates into a jitter or a frozen lattice.
  */
 import { createGLRuntime, createFullscreenPass, createPingPong, buildProgram, pointScale, particleSide, fadeAlphaForHalfLife, luminanceScale } from './gl-base.js'
-import { GLSL, createInstancedQuads } from './glsl-lib.js'
+import { GLSL, createInstancedQuads, createUniformCache } from './glsl-lib.js'
 import { createRng } from './seed.js'
 import { createPostChain } from './post-fx.js'
 
@@ -229,6 +229,12 @@ export default {
         drawProg = buildProgram(gl, DRAW_VERT, DRAW_FRAG)
         // Instanced unit quads, oriented per boid in the vertex shader.
         quads = createInstancedQuads(gl, drawProg.program)
+        // Uniform locations are fixed for a program's lifetime; looking them up
+        // inside the per-frame draw callback was a string-keyed driver query
+        // every frame for values that never move (issue #115).
+        const uSim = createUniformCache(gl, sim.program)
+        const uFade = createUniformCache(gl, fade.program)
+        const uDraw = createUniformCache(gl, drawProg.program)
         frame = 0
 
         // HDR accumulation + bloom/tonemap/dither (issues #112, #113). Falls
@@ -263,17 +269,17 @@ export default {
           gl.disable(gl.BLEND)
           gl.bindFramebuffer(gl.FRAMEBUFFER, pp.write.fbo)
           gl.viewport(0, 0, side, side)
-          sim.draw((g, p) => {
+          sim.draw((g) => {
             g.activeTexture(g.TEXTURE0)
             g.bindTexture(g.TEXTURE_2D, pp.read.tex)
-            g.uniform1i(g.getUniformLocation(p, 'uState'), 0)
-            g.uniform2f(g.getUniformLocation(p, 'uTexel'), 1 / side, 1 / side)
-            g.uniform1f(g.getUniformLocation(p, 'uDt'), dt)
-            g.uniform1f(g.getUniformLocation(p, 'uFrame'), frame)
-            g.uniform2f(g.getUniformLocation(p, 'uRadii'), sepRadius, aliRadius)
-            g.uniform3f(g.getUniformLocation(p, 'uWeights'), weights[0], weights[1], weights[2])
-            g.uniform1f(g.getUniformLocation(p, 'uCenter'), center)
-            g.uniform2f(g.getUniformLocation(p, 'uSpeed'), maxSpeed, minSpeed)
+            g.uniform1i(uSim('uState'), 0)
+            g.uniform2f(uSim('uTexel'), 1 / side, 1 / side)
+            g.uniform1f(uSim('uDt'), dt)
+            g.uniform1f(uSim('uFrame'), frame)
+            g.uniform2f(uSim('uRadii'), sepRadius, aliRadius)
+            g.uniform3f(uSim('uWeights'), weights[0], weights[1], weights[2])
+            g.uniform1f(uSim('uCenter'), center)
+            g.uniform2f(uSim('uSpeed'), maxSpeed, minSpeed)
           })
           pp.swap()
 
@@ -287,8 +293,8 @@ export default {
           gl.viewport(0, 0, canvas.width, canvas.height)
           gl.enable(gl.BLEND)
           gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA)
-          fade.draw((g, p) => {
-            g.uniform1f(g.getUniformLocation(p, 'uFadeAlpha'),
+          fade.draw((g) => {
+            g.uniform1f(uFade('uFadeAlpha'),
               fadeAlphaForHalfLife(dt, TRAIL_HALF_LIFE_S))
           })
           // Switch to additive before drawing. This was missing: the fade's
@@ -300,15 +306,15 @@ export default {
           gl.useProgram(drawProg.program)
           gl.activeTexture(gl.TEXTURE0)
           gl.bindTexture(gl.TEXTURE_2D, pp.read.tex)
-          gl.uniform1i(gl.getUniformLocation(drawProg.program, 'uState'), 0)
-          gl.uniform1f(gl.getUniformLocation(drawProg.program, 'uSide'), side)
-          gl.uniform1f(gl.getUniformLocation(drawProg.program, 'uScale'), pointScale(canvas, 2.5))
+          gl.uniform1i(uDraw('uState'), 0)
+          gl.uniform1f(uDraw('uSide'), side)
+          gl.uniform1f(uDraw('uScale'), pointScale(canvas, 2.5))
           // Clip space is square regardless of the canvas, so a quad sized in
           // clip units is stretched by the aspect ratio. Dividing by width/height
           // keeps the arrowheads square -- badly needed on a 5:1 wall.
-          gl.uniform2f(gl.getUniformLocation(drawProg.program, 'uAspect'),
+          gl.uniform2f(uDraw('uAspect'),
             2.0 / canvas.width, 2.0 / canvas.height)
-          gl.uniform3f(gl.getUniformLocation(drawProg.program, 'uPhase'), phase[0], phase[1], phase[2])
+          gl.uniform3f(uDraw('uPhase'), phase[0], phase[1], phase[2])
           quads.draw(COUNT)
 
           if (post) post.present()

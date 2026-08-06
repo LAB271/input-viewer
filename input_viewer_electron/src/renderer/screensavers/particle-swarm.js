@@ -28,7 +28,7 @@
  * position, so without it every activation falls into the same eddies.
  */
 import { createGLRuntime, createFullscreenPass, createPingPong, buildProgram, pointScale, particleSide, luminanceScale, fadeAlphaForHalfLife } from './gl-base.js'
-import { GLSL } from './glsl-lib.js'
+import { GLSL, createUniformCache } from './glsl-lib.js'
 import { createRng } from './seed.js'
 import { createPostChain } from './post-fx.js'
 
@@ -212,6 +212,12 @@ export default {
         fade = createFullscreenPass(gl, FADE_FRAG)
         drawProg = buildProgram(gl, DRAW_VERT, DRAW_FRAG)
         vao = gl.createVertexArray()
+        // Uniform locations are fixed for a program's lifetime; looking them up
+        // inside the per-frame draw callback was a string-keyed driver query
+        // every frame for values that never move (issue #115).
+        const uSim = createUniformCache(gl, sim.program)
+        const uFade = createUniformCache(gl, fade.program)
+        const uDraw = createUniformCache(gl, drawProg.program)
 
         // HDR accumulation + bloom (issues #112, #113), which the old
         // multiply-on-white version could not use at all. Threshold sits above
@@ -238,18 +244,18 @@ export default {
           gl.disable(gl.BLEND)
           gl.bindFramebuffer(gl.FRAMEBUFFER, pp.write.fbo)
           gl.viewport(0, 0, SIDE, SIDE)
-          sim.draw((g, p) => {
+          sim.draw((g) => {
             g.activeTexture(g.TEXTURE0)
             g.bindTexture(g.TEXTURE_2D, pp.read.tex)
-            g.uniform1i(g.getUniformLocation(p, 'uState'), 0)
-            g.uniform2f(g.getUniformLocation(p, 'uTexel'), 1 / SIDE, 1 / SIDE)
-            g.uniform1f(g.getUniformLocation(p, 'uTime'), time)
-            g.uniform1f(g.getUniformLocation(p, 'uDt'), dt)
-            g.uniform2f(g.getUniformLocation(p, 'uFieldOffset'), fieldOffset[0], fieldOffset[1])
-            g.uniform1f(g.getUniformLocation(p, 'uFieldScale'), fieldScale)
-            g.uniform1f(g.getUniformLocation(p, 'uFlowSpeed'), flowSpeed)
-            g.uniform1f(g.getUniformLocation(p, 'uEvolve'), evolve)
-            g.uniform1f(g.getUniformLocation(p, 'uLifeSpan'), lifeSpan)
+            g.uniform1i(uSim('uState'), 0)
+            g.uniform2f(uSim('uTexel'), 1 / SIDE, 1 / SIDE)
+            g.uniform1f(uSim('uTime'), time)
+            g.uniform1f(uSim('uDt'), dt)
+            g.uniform2f(uSim('uFieldOffset'), fieldOffset[0], fieldOffset[1])
+            g.uniform1f(uSim('uFieldScale'), fieldScale)
+            g.uniform1f(uSim('uFlowSpeed'), flowSpeed)
+            g.uniform1f(uSim('uEvolve'), evolve)
+            g.uniform1f(uSim('uLifeSpan'), lifeSpan)
           })
           pp.swap()
 
@@ -263,8 +269,8 @@ export default {
           gl.viewport(0, 0, canvas.width, canvas.height)
           gl.enable(gl.BLEND)
           gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA)
-          fade.draw((g, p) => {
-            g.uniform1f(g.getUniformLocation(p, 'uFadeAlpha'),
+          fade.draw((g) => {
+            g.uniform1f(uFade('uFadeAlpha'),
               fadeAlphaForHalfLife(dt, TRAIL_HALF_LIFE_S))
           })
 
@@ -273,16 +279,16 @@ export default {
           gl.bindVertexArray(vao)
           gl.activeTexture(gl.TEXTURE0)
           gl.bindTexture(gl.TEXTURE_2D, pp.read.tex)
-          gl.uniform1i(gl.getUniformLocation(drawProg.program, 'uState'), 0)
-          gl.uniform1f(gl.getUniformLocation(drawProg.program, 'uSide'), SIDE)
-          gl.uniform1f(gl.getUniformLocation(drawProg.program, 'uScale'), pointScale(canvas, 1.5))
-          gl.uniform1f(gl.getUniformLocation(drawProg.program, 'uFieldScale'), fieldScale)
-          gl.uniform1f(gl.getUniformLocation(drawProg.program, 'uFieldOffsetX'), fieldOffset[0])
-          gl.uniform1f(gl.getUniformLocation(drawProg.program, 'uFieldOffsetY'), fieldOffset[1])
-          gl.uniform1f(gl.getUniformLocation(drawProg.program, 'uTime'), time)
-          gl.uniform1f(gl.getUniformLocation(drawProg.program, 'uEvolve'), evolve)
-          gl.uniform1f(gl.getUniformLocation(drawProg.program, 'uLum'), luminanceScale(canvas))
-          gl.uniform3f(gl.getUniformLocation(drawProg.program, 'uPhase'), phase[0], phase[1], phase[2])
+          gl.uniform1i(uDraw('uState'), 0)
+          gl.uniform1f(uDraw('uSide'), SIDE)
+          gl.uniform1f(uDraw('uScale'), pointScale(canvas, 1.5))
+          gl.uniform1f(uDraw('uFieldScale'), fieldScale)
+          gl.uniform1f(uDraw('uFieldOffsetX'), fieldOffset[0])
+          gl.uniform1f(uDraw('uFieldOffsetY'), fieldOffset[1])
+          gl.uniform1f(uDraw('uTime'), time)
+          gl.uniform1f(uDraw('uEvolve'), evolve)
+          gl.uniform1f(uDraw('uLum'), luminanceScale(canvas))
+          gl.uniform3f(uDraw('uPhase'), phase[0], phase[1], phase[2])
           gl.drawArrays(gl.POINTS, 0, COUNT)
 
           if (post) post.present()
