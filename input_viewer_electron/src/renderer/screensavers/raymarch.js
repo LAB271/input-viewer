@@ -102,4 +102,11 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
 // edge softening, and the noisy DE edges shimmer frame to frame as the camera
 // orbits. The context's antialias flag does nothing here -- MSAA samples
 // polygon edges, and a fullscreen shader has none.
-export default createShaderScreensaver('Raymarch Fractal', SHADER, { antialias: 4 })
+export default createShaderScreensaver('Raymarch Fractal', SHADER, {
+  antialias: 4,
+  // Glow on the bright fractal surfaces. This saver already tonemapped inline
+  // (col/(1+col) then a gamma), which the chain now does properly in ACES --
+  // the inline version stays harmless because the chain tonemaps what it
+  // receives, but the bloom is the visible gain.
+  postFX: { bloom: { threshold: 0.58, knee: 0.35, intensity: 0.35, radius: 0.9 } }
+})

@@ -23,6 +23,23 @@
  *
  * Returns null when float targets are unavailable, so callers keep their
  * existing direct-to-screen path rather than failing to start.
+ *
+ * CHOOSING A THRESHOLD
+ *
+ * It depends entirely on whether the saver is HDR or LDR, and the two want
+ * values an order of magnitude apart:
+ *
+ *   Accumulating savers (particles, attractor) write additively into the HDR
+ *   target, so dense regions run far past 1.0 -- the attractor peaks around
+ *   119. A threshold above 1.0 correctly picks out only genuine dense cores.
+ *
+ *   Fragment-shader savers (fractals, raymarch, flow field) output roughly
+ *   [0,1] per pixel and never accumulate. Their measured peaks are 0.36-0.80,
+ *   so a threshold near 1.0 catches *nothing* and the bloom is silently
+ *   invisible -- which is exactly what happened on the first attempt here.
+ *
+ * So: measure the saver's actual peak in the HDR target, then set the threshold
+ * below it (around 70% works well) rather than reaching for a round number.
  */
 import { createHdrColorTarget, createFullscreenPass } from './gl-base.js'
 import { createUniformCache } from './glsl-lib.js'

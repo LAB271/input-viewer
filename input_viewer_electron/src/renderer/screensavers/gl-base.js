@@ -335,14 +335,17 @@ export function createGLRuntime(canvas) {
  * @returns {{ name: string, create: (canvas: HTMLCanvasElement, seed?: number|string) => { start: Function, stop: Function } }}
  */
 export function createShaderScreensaver(name, mainImageSource, options = {}) {
-  const { antialias = 0 } = options
+  const { antialias = 0, postFX = null } = options
   return {
     name,
     create(canvas, seed) {
       let runtime = null
       let prog = null
+      let post = null
+      let stopped = false
       return {
         start() {
+          stopped = false
           runtime = createGLRuntime(canvas)
           // Sample count is decided once the canvas is sized, so a desk monitor
           // can pay less than the wall. Aliasing scales with how large and how
@@ -355,11 +358,37 @@ export function createShaderScreensaver(name, mainImageSource, options = {}) {
           prog = runtime.createQuadProgram(fragmentSource)
           const rng = createRng(seed)
           prog.setSeed([rng.next(), rng.next(), rng.next(), rng.next()])
+
+          const gl = runtime.gl
           runtime.start((time, frame) => {
+            // Render into the HDR target when the chain is up, otherwise
+            // straight to the screen. The chain is created asynchronously
+            // below, so the first few frames may take the direct path -- which
+            // is exactly the behaviour without postFX, so nothing breaks.
+            if (post) {
+              post.resize()
+              gl.bindFramebuffer(gl.FRAMEBUFFER, post.sceneTarget.fbo)
+              gl.viewport(0, 0, canvas.width, canvas.height)
+            }
             prog.draw(time, frame)
+            if (post) post.present()
           })
+
+          if (postFX) {
+            // Imported lazily: post-fx.js imports from this module, so a static
+            // import here would be circular.
+            import('./post-fx.js').then(({ createPostChain }) => {
+              if (stopped) return
+              post = createPostChain(gl, canvas, postFX)
+            }).catch(err => {
+              // Leaves the direct-to-screen path in place.
+              console.error('[Screensaver] Post-FX unavailable:', err)
+            })
+          }
         },
         stop() {
+          stopped = true
+          if (post) { post.destroy(); post = null }
           if (prog) { prog.destroy(); prog = null }
           if (runtime) { runtime.destroy(); runtime = null }
         }

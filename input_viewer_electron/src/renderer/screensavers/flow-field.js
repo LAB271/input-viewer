@@ -64,4 +64,8 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
 }
 `
 
-export default createShaderScreensaver('Flow Field', SHADER)
+export default createShaderScreensaver('Flow Field', SHADER, {
+  // Glow-oriented by design: bright filaments over a dark field, and #112
+  // lists it among the savers that should have had bloom all along.
+  postFX: { bloom: { threshold: 0.27, knee: 0.35, intensity: 0.28, radius: 0.9 } }
+})

@@ -70,4 +70,7 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
 }
 `
 
-export default createShaderScreensaver('Julia Set', SHADER, { antialias: 4 })
+export default createShaderScreensaver('Julia Set', SHADER, {
+  antialias: 4,
+  postFX: { bloom: { threshold: 0.32, knee: 0.3, intensity: 0.3, radius: 0.8 } }
+})
