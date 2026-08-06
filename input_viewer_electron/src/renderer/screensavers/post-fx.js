@@ -148,6 +148,17 @@ void main() {
 const TONEMAP_MODES = { none: 0, reinhard: 1, aces: 2 }
 
 /**
+ * Most recently created chain, for the preview harness to tune live.
+ *
+ * Tuning bloom by editing a constant and restarting is slow and imprecise, and
+ * the values are a judgement call that has to be made by eye on the actual
+ * display. This lets preview.js adjust them in place. Production code never
+ * reads it.
+ */
+let activeChain = null
+export function getActivePostChain() { return activeChain }
+
+/**
  * Build a post-processing chain sized to the canvas.
  *
  * @param {WebGL2RenderingContext} gl
@@ -212,8 +223,8 @@ export function createPostChain(gl, canvas, options = {}) {
       g.bindTexture(g.TEXTURE_2D, sceneTarget.tex)
       g.uniform1i(uBright('uSrc'), 0)
       g.uniform2f(uBright('uTexel'), 1 / mips[0].w, 1 / mips[0].h)
-      g.uniform1f(uBright('uThreshold'), bloom.threshold ?? 1.0)
-      g.uniform1f(uBright('uKnee'), Math.max(1e-4, bloom.knee ?? 0.5))
+      g.uniform1f(uBright('uThreshold'), params.threshold)
+      g.uniform1f(uBright('uKnee'), Math.max(1e-4, params.knee))
     })
 
     // Down the pyramid.
@@ -237,15 +248,27 @@ export function createPostChain(gl, canvas, options = {}) {
         g.bindTexture(g.TEXTURE_2D, mips[i].tex)
         g.uniform1i(uUp('uSrc'), 0)
         g.uniform2f(uUp('uTexel'), 1 / mips[i - 1].w, 1 / mips[i - 1].h)
-        g.uniform1f(uUp('uRadius'), bloom.radius ?? 1.0)
+        g.uniform1f(uUp('uRadius'), params.radius)
       })
     }
     gl.disable(gl.BLEND)
     return mips[0]
   }
 
+  // Mutable so the preview harness can tune bloom live rather than requiring a
+  // rebuild per guess. Production savers set these once at construction.
+  const params = {
+    threshold: bloom ? (bloom.threshold ?? 1.0) : 0,
+    knee: bloom ? Math.max(1e-4, bloom.knee ?? 0.5) : 0.5,
+    intensity: bloom ? (bloom.intensity ?? 0.8) : 0,
+    radius: bloom ? (bloom.radius ?? 1.0) : 1.0,
+    exposure,
+  }
+
   const chain = {
     sceneTarget,
+    /** Live-tunable bloom/exposure parameters; see preview.js controls. */
+    params,
 
     /** Match the targets to the canvas. Call after a resize. */
     resize() {
@@ -276,8 +299,8 @@ export function createPostChain(gl, canvas, options = {}) {
         g.bindTexture(g.TEXTURE_2D, (bloomTarget ?? sceneTarget).tex)
         g.uniform1i(uComp('uBloom'), 1)
         g.uniform2f(uComp('uTexel'), 1 / canvas.width, 1 / canvas.height)
-        g.uniform1f(uComp('uBloomIntensity'), bloomTarget ? (bloom.intensity ?? 0.8) : 0)
-        g.uniform1f(uComp('uExposure'), exposure)
+        g.uniform1f(uComp('uBloomIntensity'), bloomTarget ? params.intensity : 0)
+        g.uniform1f(uComp('uExposure'), params.exposure)
         g.uniform1i(uComp('uTonemap'), TONEMAP_MODES[tonemap] ?? TONEMAP_MODES.aces)
         g.uniform1i(uComp('uDither'), dither ? 1 : 0)
       })
@@ -285,6 +308,7 @@ export function createPostChain(gl, canvas, options = {}) {
     },
 
     destroy() {
+      if (activeChain === chain) activeChain = null
       sceneTarget.destroy()
       for (const mip of mips) mip.destroy()
       brightPass?.destroy()
@@ -293,5 +317,6 @@ export function createPostChain(gl, canvas, options = {}) {
       compositePass.destroy()
     },
   }
+  activeChain = chain
   return chain
 }

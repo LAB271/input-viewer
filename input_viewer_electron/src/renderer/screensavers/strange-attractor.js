@@ -165,11 +165,30 @@ export default {
         // targets are unavailable, in which case accumulation stays on the
         // 8-bit default framebuffer exactly as before.
         //
-        // A low threshold suits this saver: its brightness comes from many
-        // overlapping dim points, so the interesting glow sits just above 1.0
-        // rather than in isolated hot spots.
+        // Bloom is deliberately restrained: only the densest cores should glow,
+        // not the filaments themselves.
+        //
+        // A point contributes col*0.5 at alpha 0.12, i.e. ~0.06 per hit. So the
+        // threshold sets how many overlapping points count as "bright":
+        //
+        //   threshold 0.6 -> ~10 hits   (most of the structure -- far too much)
+        //   threshold 2.0 -> ~34 hits   (genuine cores only)
+        //
+        // The first attempt used 0.6 with intensity 0.65, which bloomed nearly
+        // the whole attractor and read as a blown-out haze. Raising the
+        // threshold confines the glow to real cores; lowering the intensity
+        // keeps it a halo rather than a second light source.
+        // Scaled by luminanceScale, because uLum already multiplies the drawn
+        // brightness on big-room displays. A fixed threshold would therefore
+        // catch 1.6x more of the structure on the wall than in the preview --
+        // the same number here means the same *structure* blooms in both.
         post = createPostChain(gl, canvas, {
-          bloom: { threshold: 0.6, knee: 0.4, intensity: 0.65, radius: 1.0 },
+          bloom: {
+            threshold: 2.0 * luminanceScale(canvas),
+            knee: 0.6,
+            intensity: 0.22,
+            radius: 0.8
+          },
           tonemap: 'aces',
           dither: true
         })
