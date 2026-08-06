@@ -180,7 +180,93 @@ vec4 fetchParticle(out vec2 uvOut) {
 vec4 fetchParticle() { vec2 ignored; return fetchParticle(ignored); }
 `
 
-export const GLSL = { hash, simplex2d, fbm, curl2d, palette, particleFetch }
+/**
+ * Vertex-shader preamble for instanced-quad particles (issue #116).
+ *
+ * GL_POINTS cannot be rotated or stretched. boids computes each bird's heading
+ * and then throws it away, using it only for hue, because a point sprite has no
+ * orientation -- so a murmuration renders as round dots rather than arrowheads,
+ * losing most of the read. Velocity-aligned motion-blur streaks are impossible
+ * for the same reason.
+ *
+ * This draws N instanced unit quads instead, each fetching its state from the
+ * sim texture by gl_InstanceID and orienting itself along its velocity.
+ * `aCorner` is the per-vertex unit-quad corner in [-0.5, 0.5].
+ *
+ * Cost is roughly 4x the vertex work of points, which is irrelevant here: these
+ * savers are fill-rate and simulation bound, not vertex bound.
+ *
+ * Declares uState/uSide/aCorner; do not redeclare them in the caller.
+ */
+const instancedQuad = /* glsl */`
+in vec2 aCorner;
+uniform sampler2D uState;
+uniform float uSide;
+
+// Per-instance state, fetched by instance id.
+vec4 fetchInstance(out vec2 uvOut) {
+  int id = gl_InstanceID;
+  int x = id % int(uSide);
+  int y = id / int(uSide);
+  uvOut = (vec2(float(x), float(y)) + 0.5) / uSide;
+  return texture(uState, uvOut);
+}
+
+// Place the quad at the instance position, rotated to face its velocity and
+// scaled by size. The stretch factor elongates along the direction of travel:
+// 1.0 is round, higher values give motion-blur streaks.
+vec2 orientedQuadOffset(vec2 vel, vec2 size, float stretch) {
+  float speed = length(vel);
+  // Below a threshold the heading is noise, so keep the quad axis-aligned
+  // rather than letting it spin wildly when a particle is nearly stationary.
+  vec2 dir = speed > 1e-4 ? vel / speed : vec2(1.0, 0.0);
+  vec2 perp = vec2(-dir.y, dir.x);
+  vec2 c = aCorner * size;
+  return dir * (c.x * stretch) + perp * c.y;
+}
+`
+
+export const GLSL = { hash, simplex2d, fbm, curl2d, palette, particleFetch, instancedQuad }
+
+/**
+ * Geometry for instanced-quad particle rendering (issue #116).
+ *
+ * Creates the shared unit-quad VBO and a VAO with `aCorner` set up as a
+ * per-vertex attribute. Draw with `draw(instanceCount)`.
+ *
+ * @param {WebGL2RenderingContext} gl
+ * @param {WebGLProgram} program - must declare `in vec2 aCorner`
+ * @returns {{draw: (count: number) => void, destroy: () => void}}
+ */
+export function createInstancedQuads(gl, program) {
+  // Two triangles as a unit quad centred on the origin.
+  const corners = new Float32Array([
+    -0.5, -0.5, 0.5, -0.5, -0.5, 0.5,
+    0.5, -0.5, 0.5, 0.5, -0.5, 0.5,
+  ])
+  const vao = gl.createVertexArray()
+  const vbo = gl.createBuffer()
+  gl.bindVertexArray(vao)
+  gl.bindBuffer(gl.ARRAY_BUFFER, vbo)
+  gl.bufferData(gl.ARRAY_BUFFER, corners, gl.STATIC_DRAW)
+  const loc = gl.getAttribLocation(program, 'aCorner')
+  if (loc >= 0) {
+    gl.enableVertexAttribArray(loc)
+    gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0)
+  }
+  gl.bindVertexArray(null)
+
+  return {
+    draw(instanceCount) {
+      gl.bindVertexArray(vao)
+      gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, instanceCount)
+    },
+    destroy() {
+      gl.deleteVertexArray(vao)
+      gl.deleteBuffer(vbo)
+    },
+  }
+}
 
 /**
  * Uniform-location cache for a program.

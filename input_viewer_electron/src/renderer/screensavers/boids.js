@@ -23,6 +23,7 @@
  * flocking degenerates into a jitter or a frozen lattice.
  */
 import { createGLRuntime, createFullscreenPass, createPingPong, buildProgram, pointScale, particleSide, fadeAlphaForHalfLife, luminanceScale } from './gl-base.js'
+import { GLSL, createInstancedQuads } from './glsl-lib.js'
 import { createRng } from './seed.js'
 import { createPostChain } from './post-fx.js'
 
@@ -105,34 +106,54 @@ void main() {
   outState = vec4(pos, vel);
 }`
 
+// Instanced oriented quads rather than GL_POINTS (issue #116). A point sprite
+// cannot be rotated, so this saver used to compute each boid's heading and then
+// throw it away, using it only for hue -- a murmuration of round dots instead of
+// arrowheads, which loses most of the read.
 const DRAW_VERT = `#version 300 es
 precision highp float;
-uniform sampler2D uState;
-uniform float uSide;
 uniform float uScale;
+uniform vec2 uAspect;   // keeps quads square in clip space
 out float vDir;
+out vec2 vQuad;         // local quad coords in [-0.5, 0.5], for the arrow shape
+
+${GLSL.instancedQuad}
+
 void main() {
-  int id = gl_VertexID;
-  int x = id % int(uSide);
-  int y = id / int(uSide);
-  vec2 uv = (vec2(float(x), float(y)) + 0.5) / uSide;
-  vec4 s = texture(uState, uv);
-  vDir = atan(s.w, s.z);
-  gl_Position = vec4(s.xy, 0.0, 1.0);
-  gl_PointSize = 2.5 * uScale;
+  vec2 uv;
+  vec4 s = fetchInstance(uv);
+  vec2 vel = s.zw;
+  vDir = atan(vel.y, vel.x);
+  vQuad = aCorner;
+
+  // Stretched along travel so the boid reads as an arrowhead with a heading,
+  // not a blob. 2.5px was the old point size; the quad is sized to match.
+  vec2 size = vec2(2.5 * uScale) * uAspect;
+  vec2 offset = orientedQuadOffset(vel, size, 2.2);
+  gl_Position = vec4(s.xy + offset, 0.0, 1.0);
 }`
 
 const DRAW_FRAG = `#version 300 es
 precision highp float;
 in float vDir;
+in vec2 vQuad;
 uniform vec3 uPhase;
 out vec4 outColor;
 void main() {
-  vec2 d = gl_PointCoord - 0.5;
-  if (dot(d, d) > 0.25) discard;
+  // Arrowhead: full width at the tail, tapering to a point at the nose. x runs
+  // -0.5 (tail) to +0.5 (nose) along the direction of travel.
+  float alongTravel = vQuad.x + 0.5;              // 0 at tail, 1 at nose
+  float halfWidth = 0.5 * (1.0 - alongTravel);    // taper toward the nose
+  if (abs(vQuad.y) > halfWidth) discard;
+
+  // Soft edges so it does not alias, and brighter toward the nose so the
+  // direction of travel is legible at a glance.
+  float edge = smoothstep(halfWidth, halfWidth * 0.4, abs(vQuad.y));
+  float nose = mix(0.55, 1.0, alongTravel);
+
   float hue = vDir / 6.2831 + 0.5;
   vec3 col = 0.5 + 0.5 * cos(6.2831 * (hue + uPhase));
-  outColor = vec4(col, 0.9);
+  outColor = vec4(col * nose * edge, 0.9);
 }`
 
 // Trail fade. Alpha comes in per frame so trail length is wall-clock rather
@@ -151,7 +172,7 @@ export default {
   name: 'Boids',
   create(canvas, seedValue) {
     let runtime = null, gl = null
-    let sim = null, fade = null, drawProg = null, pp = null, vao = null
+    let sim = null, fade = null, drawProg = null, pp = null, quads = null
     let post = null
     let frame = 0
     // Resolved in start(), once createGLRuntime has sized the canvas: the
@@ -206,7 +227,8 @@ export default {
         sim = createFullscreenPass(gl, SIM_FRAG)
         fade = createFullscreenPass(gl, FADE_FRAG)
         drawProg = buildProgram(gl, DRAW_VERT, DRAW_FRAG)
-        vao = gl.createVertexArray()
+        // Instanced unit quads, oriented per boid in the vertex shader.
+        quads = createInstancedQuads(gl, drawProg.program)
         frame = 0
 
         // HDR accumulation + bloom/tonemap/dither (issues #112, #113). Falls
@@ -276,14 +298,18 @@ export default {
           // and this saver's whole murmuration read (issue #116).
           gl.blendFunc(gl.SRC_ALPHA, gl.ONE)
           gl.useProgram(drawProg.program)
-          gl.bindVertexArray(vao)
           gl.activeTexture(gl.TEXTURE0)
           gl.bindTexture(gl.TEXTURE_2D, pp.read.tex)
           gl.uniform1i(gl.getUniformLocation(drawProg.program, 'uState'), 0)
           gl.uniform1f(gl.getUniformLocation(drawProg.program, 'uSide'), side)
           gl.uniform1f(gl.getUniformLocation(drawProg.program, 'uScale'), pointScale(canvas, 2.5))
+          // Clip space is square regardless of the canvas, so a quad sized in
+          // clip units is stretched by the aspect ratio. Dividing by width/height
+          // keeps the arrowheads square -- badly needed on a 5:1 wall.
+          gl.uniform2f(gl.getUniformLocation(drawProg.program, 'uAspect'),
+            2.0 / canvas.width, 2.0 / canvas.height)
           gl.uniform3f(gl.getUniformLocation(drawProg.program, 'uPhase'), phase[0], phase[1], phase[2])
-          gl.drawArrays(gl.POINTS, 0, COUNT)
+          quads.draw(COUNT)
 
           if (post) post.present()
         })
@@ -292,7 +318,7 @@ export default {
         if (sim) { sim.destroy(); sim = null }
         if (fade) { fade.destroy(); fade = null }
         if (drawProg) { drawProg.destroy(); drawProg = null }
-        if (vao) { gl.deleteVertexArray(vao); vao = null }
+        if (quads) { quads.destroy(); quads = null }
         if (pp) { pp.destroy(); pp = null }
         if (post) { post.destroy(); post = null }
         if (runtime) { runtime.destroy(); runtime = null }
