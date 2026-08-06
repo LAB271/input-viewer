@@ -19,10 +19,8 @@
  *
  * Deliberately monochrome -- there is no palette here and none should be added.
  */
-import { createGLRuntime, createFullscreenPass, createPingPong, buildProgram, pointScale, particleSide, fadeAlphaForHalfLife, luminanceScale } from './gl-base.js'
-import { GLSL } from './glsl-lib.js'
+import { createGLRuntime, createFullscreenPass, createPingPong, buildProgram, pointScale, particleSide, fadeAlphaForHalfLife } from './gl-base.js'
 import { createRng } from './seed.js'
-import { createPostChain } from './post-fx.js'
 
 const SIDE = 256 // 65,536 particles at 1080p
 // Scales up with canvas area; capped so the wall costs ~147k particles
@@ -41,14 +39,22 @@ uniform float uFlowSpeed;
 uniform vec2 uDrift;       // gentle constant drift, mostly downward
 out vec4 outState;
 
-${GLSL.hash}
-${GLSL.simplex2d}
-${GLSL.curl2d}
-
-// Shared simplex curl (issue #115), replacing hand-rolled value noise whose
-// coarse e=0.08 finite difference gave visible faceting in the flow direction,
-// and whose time-as-scalar-offset slid the field instead of evolving it.
-vec2 flow(vec2 p, float t) { return curl2d(p, t); }
+float hash(vec2 p){ p=fract(p*vec2(123.34,456.21)); p+=dot(p,p+45.32); return fract(p.x*p.y); }
+float noise(vec2 p){
+  vec2 i=floor(p), f=fract(p); vec2 u=f*f*(3.0-2.0*f);
+  return mix(mix(hash(i),hash(i+vec2(1,0)),u.x),mix(hash(i+vec2(0,1)),hash(i+vec2(1,1)),u.x),u.y);
+}
+// Deliberately the original hand-rolled value noise, not the shared simplex
+// library. Simplex is objectively the better noise -- no lattice artifacts, and
+// curl2d evolves the field rather than sliding it -- but it gave this saver a
+// different character, and the calm drifting look here was preferred. The other
+// savers use the shared library; this one keeps its own field on purpose.
+vec2 flow(vec2 p,float t){
+  float e=0.08;
+  float a=noise(p+vec2(0,e)+t)-noise(p-vec2(0,e)+t);
+  float b=noise(p+vec2(e,0)-t)-noise(p-vec2(e,0)-t);
+  return vec2(a,-b);
+}
 
 void main(){
   vec2 uv = gl_FragCoord.xy * uTexel;
@@ -64,14 +70,11 @@ void main(){
 
   // Respawn dead/off-screen particles at a random edge.
   if (life <= 0.0 || abs(pos.x) > 1.05 || abs(pos.y) > 1.05) {
-    // Integer-hash RNG rather than the old fract()-based hash of
-    // (uv + uTime): feeding continuous time through a weak 2D hash correlated
-    // respawn positions between neighbouring particles, which showed as faint
-    // clumping (issue #115).
-    vec2 r = rand2(uv + vec2(uTime, -uTime));
-    pos = r * 2.0 - 1.0;
-    life = 0.5 + rand(uv * 3.1 + uTime) * 0.8;
-    phase = rand(uv * 5.3 + uTime);
+    float r1 = hash(uv + uTime);
+    float r2 = hash(uv * 1.7 - uTime);
+    pos = vec2(r1, r2) * 2.0 - 1.0;
+    life = 0.5 + hash(uv * 3.1 + uTime) * 0.8;
+    phase = hash(uv * 5.3 + uTime);
   }
   outState = vec4(pos, phase, life);
 }`
@@ -129,7 +132,6 @@ export default {
   create(canvas, seedValue) {
     let runtime = null, gl = null
     let sim = null, fade = null, drawProg = null, pp = null, vao = null
-    let post = null
     // Resolved in start(), once createGLRuntime has sized the canvas: the
     // particle count scales with canvas area, so it cannot be known here.
     let side = SIDE
@@ -184,30 +186,6 @@ export default {
         drawProg = buildProgram(gl, DRAW_VERT, DRAW_FRAG)
         vao = gl.createVertexArray()
 
-        // HDR accumulation + bloom/tonemap/dither (issues #112, #113). Null
-        // when float targets are unavailable, in which case accumulation stays
-        // on the 8-bit default framebuffer exactly as before.
-        //
-        // Restrained settings: this saver is deliberately calm and monochrome,
-        // so bloom should suggest a soft halo around the brightest twinkles
-        // rather than turn the field into a glow. A twinkling point peaks near
-        // 1.0, so the threshold sits above that and only overlaps bloom.
-        post = createPostChain(gl, canvas, {
-          bloom: {
-            threshold: 1.15 * luminanceScale(canvas),
-            knee: 0.35,
-            intensity: 0.18,
-            radius: 0.7
-          },
-          tonemap: 'aces',
-          dither: true
-        })
-
-        // Clear once on whichever buffer accumulates.
-        gl.bindFramebuffer(gl.FRAMEBUFFER, post ? post.sceneTarget.fbo : null)
-        gl.clearColor(0, 0, 0, 1)
-        gl.clear(gl.COLOR_BUFFER_BIT)
-
         runtime.start((time, frameCount, glCtx, rt) => {
           // Runtime owns the clamped frame delta now (issue #113).
           const dt = rt.dt
@@ -229,12 +207,7 @@ export default {
           })
           pp.swap()
 
-          if (post) {
-            post.resize()
-            gl.bindFramebuffer(gl.FRAMEBUFFER, post.sceneTarget.fbo)
-          } else {
-            gl.bindFramebuffer(gl.FRAMEBUFFER, null)
-          }
+          gl.bindFramebuffer(gl.FRAMEBUFFER, null)
           gl.viewport(0, 0, canvas.width, canvas.height)
           // Fade for soft trails, then additive white points.
           gl.enable(gl.BLEND)
@@ -258,8 +231,6 @@ export default {
           gl.uniform1f(gl.getUniformLocation(drawProg.program, 'uScale'), pointScale(canvas, 2.0))
           gl.uniform1f(gl.getUniformLocation(drawProg.program, 'uTwinkle'), twinkle)
           gl.drawArrays(gl.POINTS, 0, count)
-
-          if (post) post.present()
         })
       },
       stop() {
@@ -268,7 +239,6 @@ export default {
         if (drawProg) { drawProg.destroy(); drawProg = null }
         if (vao) { gl.deleteVertexArray(vao); vao = null }
         if (pp) { pp.destroy(); pp = null }
-        if (post) { post.destroy(); post = null }
         if (runtime) { runtime.destroy(); runtime = null }
         gl = null
       }
