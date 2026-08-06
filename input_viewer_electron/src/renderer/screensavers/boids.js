@@ -22,8 +22,9 @@
  * inside the alignment radius and the minimum speed below the maximum, or the
  * flocking degenerates into a jitter or a frozen lattice.
  */
-import { createGLRuntime, createFullscreenPass, createPingPong, buildProgram, pointScale, particleSide, fadeAlphaForHalfLife } from './gl-base.js'
+import { createGLRuntime, createFullscreenPass, createPingPong, buildProgram, pointScale, particleSide, fadeAlphaForHalfLife, luminanceScale } from './gl-base.js'
 import { createRng } from './seed.js'
+import { createPostChain } from './post-fx.js'
 
 const SIDE = 64 // 64x64 = 4096 boids
 // Scales up with canvas area; capped to bound worst-case GPU cost, so very
@@ -151,6 +152,7 @@ export default {
   create(canvas, seedValue) {
     let runtime = null, gl = null
     let sim = null, fade = null, drawProg = null, pp = null, vao = null
+    let post = null
     let frame = 0
     // Resolved in start(), once createGLRuntime has sized the canvas: the
     // particle count scales with canvas area, so it cannot be known here.
@@ -207,6 +209,28 @@ export default {
         vao = gl.createVertexArray()
         frame = 0
 
+        // HDR accumulation + bloom/tonemap/dither (issues #112, #113). Falls
+        // back to the 8-bit default framebuffer when float targets are absent.
+        //
+        // Boids now blend additively (the missing switch fixed earlier in this
+        // branch), so a dense cluster genuinely accumulates past 1.0 -- that is
+        // exactly what should glow, and a lone boid at 0.9 should not. The
+        // threshold sits just above a single boid.
+        post = createPostChain(gl, canvas, {
+          bloom: {
+            threshold: 1.1 * luminanceScale(canvas),
+            knee: 0.4,
+            intensity: 0.25,
+            radius: 0.8
+          },
+          tonemap: 'aces',
+          dither: true
+        })
+
+        gl.bindFramebuffer(gl.FRAMEBUFFER, post ? post.sceneTarget.fbo : null)
+        gl.clearColor(0, 0, 0, 1)
+        gl.clear(gl.COLOR_BUFFER_BIT)
+
         runtime.start((time, frameCount, glCtx, rt) => {
           // The runtime now owns the clamped frame delta (issue #113); this
           // file used to hand-roll the identical line.
@@ -232,7 +256,12 @@ export default {
           pp.swap()
 
           // Fade the screen slightly (trails) then draw boids additively.
-          gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+          if (post) {
+            post.resize()
+            gl.bindFramebuffer(gl.FRAMEBUFFER, post.sceneTarget.fbo)
+          } else {
+            gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+          }
           gl.viewport(0, 0, canvas.width, canvas.height)
           gl.enable(gl.BLEND)
           gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA)
@@ -255,6 +284,8 @@ export default {
           gl.uniform1f(gl.getUniformLocation(drawProg.program, 'uScale'), pointScale(canvas, 2.5))
           gl.uniform3f(gl.getUniformLocation(drawProg.program, 'uPhase'), phase[0], phase[1], phase[2])
           gl.drawArrays(gl.POINTS, 0, COUNT)
+
+          if (post) post.present()
         })
       },
       stop() {
@@ -263,6 +294,7 @@ export default {
         if (drawProg) { drawProg.destroy(); drawProg = null }
         if (vao) { gl.deleteVertexArray(vao); vao = null }
         if (pp) { pp.destroy(); pp = null }
+        if (post) { post.destroy(); post = null }
         if (runtime) { runtime.destroy(); runtime = null }
         gl = null
       }

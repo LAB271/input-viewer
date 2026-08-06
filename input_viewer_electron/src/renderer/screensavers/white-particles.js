@@ -19,8 +19,9 @@
  *
  * Deliberately monochrome -- there is no palette here and none should be added.
  */
-import { createGLRuntime, createFullscreenPass, createPingPong, buildProgram, pointScale, particleSide, fadeAlphaForHalfLife } from './gl-base.js'
+import { createGLRuntime, createFullscreenPass, createPingPong, buildProgram, pointScale, particleSide, fadeAlphaForHalfLife, luminanceScale } from './gl-base.js'
 import { createRng } from './seed.js'
+import { createPostChain } from './post-fx.js'
 
 const SIDE = 256 // 65,536 particles at 1080p
 // Scales up with canvas area; capped so the wall costs ~147k particles
@@ -127,6 +128,7 @@ export default {
   create(canvas, seedValue) {
     let runtime = null, gl = null
     let sim = null, fade = null, drawProg = null, pp = null, vao = null
+    let post = null
     // Resolved in start(), once createGLRuntime has sized the canvas: the
     // particle count scales with canvas area, so it cannot be known here.
     let side = SIDE
@@ -181,6 +183,30 @@ export default {
         drawProg = buildProgram(gl, DRAW_VERT, DRAW_FRAG)
         vao = gl.createVertexArray()
 
+        // HDR accumulation + bloom/tonemap/dither (issues #112, #113). Null
+        // when float targets are unavailable, in which case accumulation stays
+        // on the 8-bit default framebuffer exactly as before.
+        //
+        // Restrained settings: this saver is deliberately calm and monochrome,
+        // so bloom should suggest a soft halo around the brightest twinkles
+        // rather than turn the field into a glow. A twinkling point peaks near
+        // 1.0, so the threshold sits above that and only overlaps bloom.
+        post = createPostChain(gl, canvas, {
+          bloom: {
+            threshold: 1.15 * luminanceScale(canvas),
+            knee: 0.35,
+            intensity: 0.18,
+            radius: 0.7
+          },
+          tonemap: 'aces',
+          dither: true
+        })
+
+        // Clear once on whichever buffer accumulates.
+        gl.bindFramebuffer(gl.FRAMEBUFFER, post ? post.sceneTarget.fbo : null)
+        gl.clearColor(0, 0, 0, 1)
+        gl.clear(gl.COLOR_BUFFER_BIT)
+
         runtime.start((time, frameCount, glCtx, rt) => {
           // Runtime owns the clamped frame delta now (issue #113).
           const dt = rt.dt
@@ -202,7 +228,12 @@ export default {
           })
           pp.swap()
 
-          gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+          if (post) {
+            post.resize()
+            gl.bindFramebuffer(gl.FRAMEBUFFER, post.sceneTarget.fbo)
+          } else {
+            gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+          }
           gl.viewport(0, 0, canvas.width, canvas.height)
           // Fade for soft trails, then additive white points.
           gl.enable(gl.BLEND)
@@ -226,6 +257,8 @@ export default {
           gl.uniform1f(gl.getUniformLocation(drawProg.program, 'uScale'), pointScale(canvas, 2.0))
           gl.uniform1f(gl.getUniformLocation(drawProg.program, 'uTwinkle'), twinkle)
           gl.drawArrays(gl.POINTS, 0, count)
+
+          if (post) post.present()
         })
       },
       stop() {
@@ -234,6 +267,7 @@ export default {
         if (drawProg) { drawProg.destroy(); drawProg = null }
         if (vao) { gl.deleteVertexArray(vao); vao = null }
         if (pp) { pp.destroy(); pp = null }
+        if (post) { post.destroy(); post = null }
         if (runtime) { runtime.destroy(); runtime = null }
         gl = null
       }
