@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<!--
+  SPDX-License-Identifier: Apache-2.0
+  SPDX-FileCopyrightText: 2025-2026 Schuberg Philis / Lab271
+
+  Shader compile check. Starts every registered screensaver against a real
+  WebGL2 context, runs it for a few frames, then stops it -- so every shader in
+  the folder is actually compiled and linked by the GPU driver.
+
+  This exists because the unit tests cannot do it: there is no WebGL2 context in
+  the node test environment, and headless-gl would add a native build
+  dependency. The static GLSL checks in test/screensaver-seed.test.js catch
+  malformed literals and unbalanced braces, but only a driver catches a genuine
+  type error or an undeclared identifier.
+
+  Run headless via scripts/shader-check.mjs (npm run shadercheck).
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Shader check</title>
+  <style>
+    html, body { margin: 0; background: #000; color: #ddd; font: 13px monospace; }
+    #canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; }
+    #out { position: fixed; inset: 0; padding: 12px; overflow: auto; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <canvas id="screensaver-canvas"></canvas>
+  <pre id="out"></pre>
+  <script type="module" src="./shadercheck.js"></script>
+</body>
+</html>
