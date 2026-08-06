@@ -23,6 +23,7 @@
  */
 import { createGLRuntime, createFullscreenPass, createPingPong, buildProgram, pointScale, particleSide, luminanceScale, fadeAlphaForHalfLife } from './gl-base.js'
 import { createRng } from './seed.js'
+import { createPostChain } from './post-fx.js'
 
 const SIDE = 256 // 65,536 points
 // Scales up with canvas area; capped to bound worst-case GPU cost,
@@ -93,7 +94,9 @@ void main() {
   // ambient light raises the black floor this effect depends on (see #88).
   // Boosts the colour rather than the alpha, so the accumulation still builds
   // up gradually instead of the points turning opaque.
-  outColor = vec4(min(col * 0.5 * uLum, vec3(1.0)), 0.12);
+  // No clamp: the post chain tonemaps, so values above 1.0 carry real
+  // information about how dense the core is instead of all reading as white.
+  outColor = vec4(col * 0.5 * uLum, 0.12);
 }`
 
 // Trail fade. The alpha is supplied per frame rather than baked in, so trail
@@ -114,6 +117,7 @@ export default {
   create(canvas, seedValue) {
     let runtime = null, gl = null
     let sim = null, fade = null, drawProg = null, pp = null, vao = null
+    let post = null
     // Resolved in start(), once createGLRuntime has sized the canvas: the
     // particle count scales with canvas area, so it cannot be known here.
     let side = SIDE
@@ -157,8 +161,21 @@ export default {
         drawProg = buildProgram(gl, DRAW_VERT, DRAW_FRAG)
         vao = gl.createVertexArray()
 
-        // Clear to black once.
-        gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+        // HDR accumulation + bloom/tonemap/dither (issue #112). Null when float
+        // targets are unavailable, in which case accumulation stays on the
+        // 8-bit default framebuffer exactly as before.
+        //
+        // A low threshold suits this saver: its brightness comes from many
+        // overlapping dim points, so the interesting glow sits just above 1.0
+        // rather than in isolated hot spots.
+        post = createPostChain(gl, canvas, {
+          bloom: { threshold: 0.6, knee: 0.4, intensity: 0.65, radius: 1.0 },
+          tonemap: 'aces',
+          dither: true
+        })
+
+        // Clear to black once, on whichever buffer accumulates.
+        gl.bindFramebuffer(gl.FRAMEBUFFER, post ? post.sceneTarget.fbo : null)
         gl.clearColor(0, 0, 0, 1)
         gl.clear(gl.COLOR_BUFFER_BIT)
 
@@ -183,8 +200,15 @@ export default {
           })
           pp.swap()
 
-          // Fade prior frame, then accumulate points additively.
-          gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+          // Fade prior frame, then accumulate points additively -- into the
+          // HDR target when available, so faint filaments do not quantise and
+          // the fade can actually reach zero (issue #113).
+          if (post) {
+            post.resize()
+            gl.bindFramebuffer(gl.FRAMEBUFFER, post.sceneTarget.fbo)
+          } else {
+            gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+          }
           gl.viewport(0, 0, canvas.width, canvas.height)
           gl.enable(gl.BLEND)
           gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA)
@@ -204,6 +228,11 @@ export default {
           gl.uniform1f(gl.getUniformLocation(drawProg.program, 'uLum'), luminanceScale(canvas))
           gl.uniform3f(gl.getUniformLocation(drawProg.program, 'uPhase'), phase[0], phase[1], phase[2])
           gl.drawArrays(gl.POINTS, 0, COUNT)
+
+          // Resolve HDR -> bloom -> tonemap -> gamma -> dither to the screen.
+          // Without a chain the accumulation already went straight to the
+          // default framebuffer, so there is nothing to resolve.
+          if (post) post.present()
         })
       },
       stop() {
@@ -212,6 +241,7 @@ export default {
         if (drawProg) { drawProg.destroy(); drawProg = null }
         if (vao) { gl.deleteVertexArray(vao); vao = null }
         if (pp) { pp.destroy(); pp = null }
+        if (post) { post.destroy(); post = null }
         if (runtime) { runtime.destroy(); runtime = null }
         gl = null
       }
