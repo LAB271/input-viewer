@@ -88,6 +88,17 @@ uniform float uLum;
 uniform vec3 uPhase;
 out vec4 outColor;
 void main() {
+  // Round, soft-edged sprite instead of the default hard square. This saver
+  // never tested gl_PointCoord, so every point was an axis-aligned block --
+  // precisely the wrong shape for a filamentary attractor, and on the wall
+  // pointScale's 4px floor turned it into visible 4x4 squares (issue #116).
+  vec2 d = gl_PointCoord - 0.5;
+  float r2 = dot(d, d);
+  if (r2 > 0.25) discard;
+  // Squared falloff concentrates each point's energy at its centre, so
+  // overlapping points still build sharp filaments rather than smearing.
+  float softness = smoothstep(0.25, 0.0, r2);
+
   vec3 col = 0.5 + 0.5 * cos(6.2831 * (vIdx * 0.5 + uTime * 0.03 + uPhase));
   // Dim + additive accumulation: brightness comes from many overlapping points
   // rather than any single one. uLum lifts it on big-room displays, where
@@ -96,7 +107,7 @@ void main() {
   // up gradually instead of the points turning opaque.
   // No clamp: the post chain tonemaps, so values above 1.0 carry real
   // information about how dense the core is instead of all reading as white.
-  outColor = vec4(col * 0.5 * uLum, 0.12);
+  outColor = vec4(col * 0.5 * uLum * softness, 0.12);
 }`
 
 // Trail fade. The alpha is supplied per frame rather than baked in, so trail
@@ -111,6 +122,11 @@ void main() { outColor = vec4(0.0, 0.0, 0.0, uFadeAlpha); }`
 // Chosen to reproduce the previous look at 60Hz, where the fixed 0.04 alpha
 // decayed a trail to half brightness in ~0.28s.
 const TRAIL_HALF_LIFE_S = 0.283
+
+// Mean of the soft sprite's smoothstep falloff over its disc, relative to the
+// hard square it replaced (issue #116). Measured numerically: a round soft point
+// deposits ~39% of the energy, so brightness-derived thresholds scale by it.
+const SOFT_SPRITE_ENERGY = 0.4
 
 export default {
   name: 'Strange Attractor',
@@ -178,13 +194,18 @@ export default {
         // the whole attractor and read as a blown-out haze. Raising the
         // threshold confines the glow to real cores; lowering the intensity
         // keeps it a halo rather than a second light source.
+        //
+        // Then scaled by 0.4, because the soft round sprite (issue #116)
+        // deposits only ~39% of the energy the old hard square did -- measured
+        // as the mean of the smoothstep falloff over the disc. Without this the
+        // 2.0 threshold would catch almost nothing and the glow would vanish.
         // Scaled by luminanceScale, because uLum already multiplies the drawn
         // brightness on big-room displays. A fixed threshold would therefore
         // catch 1.6x more of the structure on the wall than in the preview --
         // the same number here means the same *structure* blooms in both.
         post = createPostChain(gl, canvas, {
           bloom: {
-            threshold: 2.0 * luminanceScale(canvas),
+            threshold: 2.0 * SOFT_SPRITE_ENERGY * luminanceScale(canvas),
             knee: 0.6,
             intensity: 0.22,
             radius: 0.8

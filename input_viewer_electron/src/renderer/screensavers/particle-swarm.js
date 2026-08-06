@@ -88,12 +88,25 @@ in float vSpeed;
 uniform vec3 uPhase;
 out vec4 outColor;
 void main() {
+  // Round, soft-edged sprite instead of the default hard square. Points had no
+  // gl_PointCoord test at all, so every particle was an axis-aligned block --
+  // on the wall, pointScale's 4px floor made that 147k visible 4x4 squares
+  // (issue #116).
+  vec2 d = gl_PointCoord - 0.5;
+  float r2 = dot(d, d);
+  if (r2 > 0.25) discard;
+
   vec3 col = 0.5 + 0.5 * cos(6.2831 * (vSpeed * 2.0 + uPhase));
   // Multiply blend over a white background ("ink on paper"): emit a value
   // close to 1.0 so a single particle barely tints the paper and overlaps
   // build up saturated color. mix toward white keeps it light and airy.
   vec3 ink = mix(vec3(1.0), col, 0.5);
-  outColor = vec4(ink, 1.0);
+
+  // Under multiply blending white is the identity, so the edge has to fade
+  // *toward white* rather than toward transparent -- an alpha ramp would do
+  // nothing here.
+  float softness = smoothstep(0.25, 0.0, r2);
+  outColor = vec4(mix(vec3(1.0), ink, softness), 1.0);
 }`
 
 export default {
