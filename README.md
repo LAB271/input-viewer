@@ -6,22 +6,16 @@
 
 A lightweight video input viewer — **OBS without the complexity**. View and manage capture card feeds with a clean, simple interface designed for users who need to display video inputs without the overhead of full streaming software.
 
-<!-- SCREENSHOT SLOT (issue #49)
+![Input Viewer in dual view, with the input dropdown open](assets/screenshot-dual.png)
 
-Capturing these needs the real app with capture hardware attached, so the
-markup is left commented out rather than pointing at files that do not exist
-yet -- an unresolved image path renders as a broken image on the repo page.
+*Dual view with the dropdown open: per-side input selection, per-input and
+system volume, and the centre divider between the two feeds.*
 
-To finish: drop the files in assets/ and delete the comment markers around the
-two lines below.
-
-  1. assets/screenshot-dual.png  - dual view with two live feeds
-  2. assets/demo.gif             - D/S layout switching and 1-4 input selection
-
-![Input Viewer in dual view](assets/screenshot-dual.png)
+<!-- Still open from issue #49: a short GIF showing D/S layout switching and
+     1-4 input selection. Add assets/demo.gif and uncomment the line below --
+     an unresolved image path renders as a broken image on the repo page.
 
 ![Layout switching and input selection](assets/demo.gif)
-
 -->
 
 ## Download
