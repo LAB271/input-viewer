@@ -13,6 +13,7 @@
  * single hardcoded pair.
  */
 import { createGLRuntime, createFullscreenPass, createPingPong } from './gl-base.js'
+import { createUniformCache } from './glsl-lib.js'
 import { createRng } from './seed.js'
 
 const SIM_FRAG = `#version 300 es
@@ -156,6 +157,11 @@ export default {
         pp = createPingPong(gl, SIM, SIM, makeSeed())
         sim = createFullscreenPass(gl, SIM_FRAG)
         display = createFullscreenPass(gl, DISPLAY_FRAG)
+        // Uniform locations are fixed for a program's lifetime. Looking them up
+        // inside the draw callback meant 5 string-keyed driver queries x 8
+        // substeps = 40 per frame, for values that never move (issue #115).
+        const uSim = createUniformCache(gl, sim.program)
+        const uDisplay = createUniformCache(gl, display.program)
 
         runtime.start((time) => {
           // Several simulation substeps per frame for faster evolution.
@@ -171,15 +177,15 @@ export default {
           for (let i = 0; i < steps; i++) {
             gl.bindFramebuffer(gl.FRAMEBUFFER, pp.write.fbo)
             gl.viewport(0, 0, SIM, SIM)
-            sim.draw((g, p) => {
+            sim.draw((g) => {
               g.activeTexture(g.TEXTURE0)
               g.bindTexture(g.TEXTURE_2D, pp.read.tex)
-              g.uniform1i(g.getUniformLocation(p, 'uState'), 0)
-              g.uniform2f(g.getUniformLocation(p, 'uTexel'), 1 / SIM, 1 / SIM)
-              g.uniform1f(g.getUniformLocation(p, 'uFeed'), regime.feed)
-              g.uniform1f(g.getUniformLocation(p, 'uKill'), regime.kill)
+              g.uniform1i(uSim('uState'), 0)
+              g.uniform2f(uSim('uTexel'), 1 / SIM, 1 / SIM)
+              g.uniform1f(uSim('uFeed'), regime.feed)
+              g.uniform1f(uSim('uKill'), regime.kill)
               const sx = i === 0 ? seedX : -1
-              g.uniform2f(g.getUniformLocation(p, 'uSeed'), sx, sx >= 0 ? seedY : -1)
+              g.uniform2f(uSim('uSeed'), sx, sx >= 0 ? seedY : -1)
             })
             pp.swap()
           }
@@ -187,13 +193,13 @@ export default {
           // Display pass to the screen.
           gl.bindFramebuffer(gl.FRAMEBUFFER, null)
           gl.viewport(0, 0, canvas.width, canvas.height)
-          display.draw((g, p) => {
+          display.draw((g) => {
             g.activeTexture(g.TEXTURE0)
             g.bindTexture(g.TEXTURE_2D, pp.read.tex)
-            g.uniform1i(g.getUniformLocation(p, 'uState'), 0)
-            g.uniform2f(g.getUniformLocation(p, 'uResolution'), canvas.width, canvas.height)
-            g.uniform1f(g.getUniformLocation(p, 'uTime'), time)
-            g.uniform3f(g.getUniformLocation(p, 'uPhase'), palettePhase[0], palettePhase[1], palettePhase[2])
+            g.uniform1i(uDisplay('uState'), 0)
+            g.uniform2f(uDisplay('uResolution'), canvas.width, canvas.height)
+            g.uniform1f(uDisplay('uTime'), time)
+            g.uniform3f(uDisplay('uPhase'), palettePhase[0], palettePhase[1], palettePhase[2])
           })
         })
       },

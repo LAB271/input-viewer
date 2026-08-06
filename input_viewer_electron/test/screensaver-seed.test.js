@@ -377,7 +377,7 @@ describe('screensaver module contract', () => {
   it('every saver module in the folder is registered', () => {
     // A saver that exists but is not in SCREENSAVERS silently never runs.
     const infra = new Set([
-      'gl-base.js', 'registry.js', 'seed.js',
+      'gl-base.js', 'glsl-lib.js', 'registry.js', 'seed.js',
       'preview.js', 'preview.html',
       'shadercheck.js', 'shadercheck.html'
     ])
