@@ -11,32 +11,22 @@
  * at 0, so the warp phase cannot vary on its own.
  */
 import { createShaderScreensaver } from './gl-base.js'
+import { GLSL } from './glsl-lib.js'
 
 const SHADER = /* glsl */ `
-// Hash / value-noise building blocks
-float hash(vec2 p) {
-  p = fract(p * vec2(123.34, 456.21));
-  p += dot(p, p + 45.32);
-  return fract(p.x * p.y);
-}
+// Shared gradient noise (issue #115). This saver is the worst case for the
+// value noise it replaces: 6 octaves of fBm meant the lattice grid compounded
+// across every octave, giving a visible axis-aligned structure that at
+// 6000x1200 reads at normal viewing distance.
+${GLSL.simplex2d}
+${GLSL.fbm}
 
-float noise(vec2 p) {
-  vec2 i = floor(p);
-  vec2 f = fract(p);
-  vec2 u = f * f * (3.0 - 2.0 * f);
-  return mix(mix(hash(i + vec2(0.0, 0.0)), hash(i + vec2(1.0, 0.0)), u.x),
-             mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x), u.y);
-}
-
-float fbm(vec2 p) {
-  float v = 0.0;
-  float a = 0.5;
-  for (int i = 0; i < 6; i++) {
-    v += a * noise(p);
-    p *= 2.0;
-    a *= 0.5;
-  }
-  return v;
+// snoise returns roughly [-1,1] where the old value noise returned [0,1], so
+// remap to keep the downstream colour mapping in the range it was tuned for.
+// Named distinctly rather than overloading fbm(): the overload resolves fine,
+// but a one-argument fbm calling a two-argument fbm reads like recursion.
+float fbm01(vec2 p) {
+  return fbm(p, 6) * 0.5 + 0.5;
 }
 
 // Two tint colours per activation, drawn from complementary-ish pairs so the
@@ -71,11 +61,11 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
   float t = iTime * 0.15 + iSeed.w * 20.0;
 
   // Domain warping: feed fbm into fbm.
-  vec2 q = vec2(fbm(p + vec2(0.0, 0.0) + t),
-                fbm(p + vec2(5.2, 1.3) - t));
-  vec2 r = vec2(fbm(p + 4.0 * q + vec2(1.7, 9.2) + 0.15 * t),
-                fbm(p + 4.0 * q + vec2(8.3, 2.8) - 0.12 * t));
-  float f = fbm(p + 4.0 * r);
+  vec2 q = vec2(fbm01(p + vec2(0.0, 0.0) + t),
+                fbm01(p + vec2(5.2, 1.3) - t));
+  vec2 r = vec2(fbm01(p + 4.0 * q + vec2(1.7, 9.2) + 0.15 * t),
+                fbm01(p + 4.0 * q + vec2(8.3, 2.8) - 0.12 * t));
+  float f = fbm01(p + 4.0 * r);
 
   // Color palette (cosine gradient), rotated per activation.
   vec3 phase = vec3(0.0, 0.33, 0.67) + iSeed.x;

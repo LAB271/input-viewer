@@ -20,6 +20,7 @@
  * Deliberately monochrome -- there is no palette here and none should be added.
  */
 import { createGLRuntime, createFullscreenPass, createPingPong, buildProgram, pointScale, particleSide, fadeAlphaForHalfLife, luminanceScale } from './gl-base.js'
+import { GLSL } from './glsl-lib.js'
 import { createRng } from './seed.js'
 import { createPostChain } from './post-fx.js'
 
@@ -40,17 +41,14 @@ uniform float uFlowSpeed;
 uniform vec2 uDrift;       // gentle constant drift, mostly downward
 out vec4 outState;
 
-float hash(vec2 p){ p=fract(p*vec2(123.34,456.21)); p+=dot(p,p+45.32); return fract(p.x*p.y); }
-float noise(vec2 p){
-  vec2 i=floor(p), f=fract(p); vec2 u=f*f*(3.0-2.0*f);
-  return mix(mix(hash(i),hash(i+vec2(1,0)),u.x),mix(hash(i+vec2(0,1)),hash(i+vec2(1,1)),u.x),u.y);
-}
-vec2 flow(vec2 p,float t){
-  float e=0.08;
-  float a=noise(p+vec2(0,e)+t)-noise(p-vec2(0,e)+t);
-  float b=noise(p+vec2(e,0)-t)-noise(p-vec2(e,0)-t);
-  return vec2(a,-b);
-}
+${GLSL.hash}
+${GLSL.simplex2d}
+${GLSL.curl2d}
+
+// Shared simplex curl (issue #115), replacing hand-rolled value noise whose
+// coarse e=0.08 finite difference gave visible faceting in the flow direction,
+// and whose time-as-scalar-offset slid the field instead of evolving it.
+vec2 flow(vec2 p, float t) { return curl2d(p, t); }
 
 void main(){
   vec2 uv = gl_FragCoord.xy * uTexel;
@@ -66,11 +64,14 @@ void main(){
 
   // Respawn dead/off-screen particles at a random edge.
   if (life <= 0.0 || abs(pos.x) > 1.05 || abs(pos.y) > 1.05) {
-    float r1 = hash(uv + uTime);
-    float r2 = hash(uv * 1.7 - uTime);
-    pos = vec2(r1, r2) * 2.0 - 1.0;
-    life = 0.5 + hash(uv * 3.1 + uTime) * 0.8;
-    phase = hash(uv * 5.3 + uTime);
+    // Integer-hash RNG rather than the old fract()-based hash of
+    // (uv + uTime): feeding continuous time through a weak 2D hash correlated
+    // respawn positions between neighbouring particles, which showed as faint
+    // clumping (issue #115).
+    vec2 r = rand2(uv + vec2(uTime, -uTime));
+    pos = r * 2.0 - 1.0;
+    life = 0.5 + rand(uv * 3.1 + uTime) * 0.8;
+    phase = rand(uv * 5.3 + uTime);
   }
   outState = vec4(pos, phase, life);
 }`

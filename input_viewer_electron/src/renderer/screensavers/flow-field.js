@@ -9,30 +9,22 @@
  * particle bookkeeping.
  */
 import { createShaderScreensaver } from './gl-base.js'
+import { GLSL } from './glsl-lib.js'
 
 const SHADER = /* glsl */ `
-float hash(vec2 p) {
-  p = fract(p * vec2(123.34, 456.21));
-  p += dot(p, p + 45.32);
-  return fract(p.x * p.y);
-}
+${GLSL.simplex2d}
+${GLSL.curl2d}
 
-float noise(vec2 p) {
-  vec2 i = floor(p);
-  vec2 f = fract(p);
-  vec2 u = f * f * (3.0 - 2.0 * f);
-  return mix(mix(hash(i + vec2(0.0, 0.0)), hash(i + vec2(1.0, 0.0)), u.x),
-             mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x), u.y);
-}
-
-// 2D curl of a scalar noise field -> divergence-free flow.
+// Divergence-free flow from the shared library (issue #115). Two fixes over the
+// hand-rolled version this replaces:
+//
+//   - it used value noise, which leaves axis-aligned lattice artifacts; on a
+//     6000px-wide wall that grid is visible at normal viewing distance
+//   - it added time as a scalar offset to *both* curl components, which slides
+//     the whole field diagonally instead of evolving it. That is why the flow
+//     visibly translated across the screen rather than churning in place.
 vec2 flow(vec2 p, float t) {
-  float e = 0.05;
-  float n1 = noise(p + vec2(0.0, e) + t);
-  float n2 = noise(p - vec2(0.0, e) + t);
-  float n3 = noise(p + vec2(e, 0.0) - t);
-  float n4 = noise(p - vec2(e, 0.0) - t);
-  return vec2(n1 - n2, -(n3 - n4)) / (2.0 * e);
+  return curl2d(p, t);
 }
 
 void mainImage(out vec4 fragColor, in vec2 fragCoord) {
