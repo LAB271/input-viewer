@@ -13,10 +13,21 @@
  *   uniform float iTime;        // seconds since the screensaver started
  *   uniform int   iFrame;       // frame counter
  *
+ * Plus one non-Shadertoy uniform, for per-activation variation:
+ *   uniform vec4  iSeed;        // four uncorrelated randoms in [0,1)
+ *
+ * iTime and iFrame both reset to 0 on every start(), so a shader that derives
+ * everything from them replays identically on every activation. iSeed is the
+ * hook that breaks that: use it to offset phases, pick targets, or rotate
+ * palettes. It is a vec4 rather than a float so a shader can vary several
+ * independent things without having to decorrelate one value by hand.
+ * See seed.js for where the values come from.
+ *
  * Write fragment shaders against gl_FragColor via a `out vec4 fragColor;`
  * (WebGL2 / GLSL ES 3.00). A `mainImage(out vec4, in vec2 fragCoord)` entry
  * point is supported for easy Shadertoy ports — see createShaderScreensaver.
  */
+import { createRng } from './seed.js'
 
 const QUAD_VERTEX_SHADER = `#version 300 es
 in vec2 aPosition;
@@ -29,6 +40,7 @@ precision highp float;
 uniform vec3 iResolution;
 uniform float iTime;
 uniform int iFrame;
+uniform vec4 iSeed;
 out vec4 outColor;
 `
 
@@ -128,7 +140,21 @@ export function createGLRuntime(canvas) {
     const uniforms = {
       iResolution: gl.getUniformLocation(program, 'iResolution'),
       iTime: gl.getUniformLocation(program, 'iTime'),
-      iFrame: gl.getUniformLocation(program, 'iFrame')
+      iFrame: gl.getUniformLocation(program, 'iFrame'),
+      iSeed: gl.getUniformLocation(program, 'iSeed')
+    }
+
+    // Four randoms for iSeed, drawn once per program rather than per frame --
+    // a seed that changed every frame would be noise, not variation.
+    let seedVec = [0, 0, 0, 0]
+
+    /**
+     * Set the iSeed values. Called by createShaderScreensaver; exposed so a
+     * hand-rolled saver using createQuadProgram directly can seed itself too.
+     * @param {number[]} v four values in [0,1)
+     */
+    function setSeed(v) {
+      seedVec = v
     }
 
     function draw(time, frameCount, extraUniforms) {
@@ -140,6 +166,7 @@ export function createGLRuntime(canvas) {
       if (uniforms.iResolution) gl.uniform3f(uniforms.iResolution, canvas.width, canvas.height, 1.0)
       if (uniforms.iTime) gl.uniform1f(uniforms.iTime, time)
       if (uniforms.iFrame) gl.uniform1i(uniforms.iFrame, frameCount)
+      if (uniforms.iSeed) gl.uniform4f(uniforms.iSeed, seedVec[0], seedVec[1], seedVec[2], seedVec[3])
       if (extraUniforms) extraUniforms(gl, program)
       gl.drawArrays(gl.TRIANGLES, 0, 3)
     }
@@ -148,7 +175,7 @@ export function createGLRuntime(canvas) {
       gl.deleteProgram(program)
     }
 
-    return { program, draw, destroy }
+    return { program, draw, destroy, setSeed }
   }
 
   /**
@@ -203,17 +230,22 @@ export function createGLRuntime(canvas) {
  * Pass a Shadertoy-style body that implements:
  *   void mainImage(out vec4 fragColor, in vec2 fragCoord) { ... }
  *
+ * The shader also receives `uniform vec4 iSeed` — four uncorrelated randoms
+ * in [0,1), fixed for the activation and drawn from the wall clock. Use it to
+ * vary phases, targets and palettes so the saver does not replay identically
+ * every time it starts.
+ *
  * Returns a screensaver object compatible with the registry:
  *   { create(canvas) -> { start(), stop() } }
  *
  * @param {string} name
  * @param {string} mainImageSource - GLSL providing mainImage()
- * @returns {{ name: string, create: (canvas: HTMLCanvasElement) => { start: Function, stop: Function } }}
+ * @returns {{ name: string, create: (canvas: HTMLCanvasElement, seed?: number|string) => { start: Function, stop: Function } }}
  */
 export function createShaderScreensaver(name, mainImageSource) {
   return {
     name,
-    create(canvas) {
+    create(canvas, seed) {
       let runtime = null
       let prog = null
       return {
@@ -221,6 +253,8 @@ export function createShaderScreensaver(name, mainImageSource) {
           runtime = createGLRuntime(canvas)
           const fragmentSource = FRAGMENT_HEADER + mainImageSource + FRAGMENT_MAINIMAGE_FOOTER
           prog = runtime.createQuadProgram(fragmentSource)
+          const rng = createRng(seed)
+          prog.setSeed([rng.next(), rng.next(), rng.next(), rng.next()])
           runtime.start((time, frame) => {
             prog.draw(time, frame)
           })

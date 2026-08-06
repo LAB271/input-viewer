@@ -3,26 +3,51 @@
 /**
  * Mandelbrot — endless auto-zoom tour into the set with smooth coloring.
  *
- * The camera continuously zooms toward a fixed interesting point and the
- * palette cycles, so it never needs interaction. Uses smooth (continuous)
- * iteration count to avoid banding.
+ * The camera continuously zooms toward an interesting point and the palette
+ * cycles, so it never needs interaction. Uses smooth (continuous) iteration
+ * count to avoid banding.
+ *
+ * Per-activation variation (iSeed): the zoom target is picked from a set of
+ * eight known-interesting boundary coordinates, the zoom depth and rate vary,
+ * and the palette is rotated. Previously every activation toured the identical
+ * coordinate from the identical wide shot -- the most conspicuous replay in the
+ * whole set, since the destination was a single hardcoded point.
  */
 import { createShaderScreensaver } from './gl-base.js'
 
 const SHADER = /* glsl */ `
-vec3 palette(float t) {
-  return 0.5 + 0.5 * cos(6.2831 * (t + vec3(0.0, 0.33, 0.67)));
+vec3 palette(float t, vec3 phase) {
+  return 0.5 + 0.5 * cos(6.2831 * (t + phase));
+}
+
+// Eight boundary points that stay detailed all the way down. Hand-picked
+// rather than random: a randomly chosen complex coordinate is overwhelmingly
+// likely to land either inside the set (flat black) or far outside it (flat
+// background), so picking from a curated list is what keeps every activation
+// worth watching.
+vec2 zoomTarget(float s) {
+  if (s < 0.125) return vec2(-0.74364388703,  0.13182590421); // seahorse valley
+  if (s < 0.250) return vec2(-0.7436447860,   0.1318252536);  // deeper seahorse
+  if (s < 0.375) return vec2(-0.10109636384,  0.95628651080); // spiral filament
+  if (s < 0.500) return vec2(-1.25066,        0.02012);       // west antenna
+  if (s < 0.625) return vec2(-0.16070135,     1.03775200);    // north bulb edge
+  if (s < 0.750) return vec2( 0.28693186889,  0.01430197560); // east elephant
+  if (s < 0.875) return vec2(-1.74995768,     0.00000000);    // needle tip
+  return vec2(-0.7345,  0.1975);                              // triple spiral
 }
 
 void mainImage(out vec4 fragColor, in vec2 fragCoord) {
   vec2 res = iResolution.xy;
   vec2 uv = (fragCoord - 0.5 * res) / res.y;
 
-  // Zoom oscillates in and back out so the tour loops smoothly.
-  float zt = iTime * 0.15;
-  float zoom = exp(-2.0 + 3.0 * (0.5 - 0.5 * cos(zt))); // smooth in/out
-  // A point on the boundary that stays interesting while zooming.
-  vec2 center = vec2(-0.74364388703, 0.13182590421);
+  // Zoom oscillates in and back out so the tour loops smoothly. Rate and depth
+  // both vary, so runs differ in pace as well as destination. Depth is capped
+  // at 3.4 because 32-bit floats break down past roughly exp(3.5) here.
+  float rate = 0.11 + iSeed.z * 0.09;
+  float depth = 2.6 + iSeed.w * 0.8;
+  float zt = iTime * rate;
+  float zoom = exp(-2.0 + depth * (0.5 - 0.5 * cos(zt))); // smooth in/out
+  vec2 center = zoomTarget(iSeed.x);
 
   vec2 c = center + uv / zoom;
 
@@ -41,7 +66,8 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
   } else {
     // Smooth iteration count.
     float sn = i - log2(log2(dot(z, z))) + 4.0;
-    col = palette(sn * 0.02 + iTime * 0.05);
+    vec3 phase = vec3(0.0, 0.33, 0.67) + iSeed.y;
+    col = palette(sn * 0.02 + iTime * 0.05, phase);
     col *= 0.6 + 0.4 * sin(sn * 0.3);
   }
   fragColor = vec4(col, 1.0);

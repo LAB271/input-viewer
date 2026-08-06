@@ -135,10 +135,18 @@ function renderList() {
   })
 }
 
-function select(index) {
+// A pinned seed from `?seed=...`, or null to let each activation draw its own
+// from the wall clock. Pinning is what makes a look reproducible while tuning:
+// note the seed the console logs, pass it back, and you get the same frame.
+const pinnedSeed = new URLSearchParams(location.search).get('seed')
+
+function select(index, reseed = false) {
   current = ((index % SCREENSAVERS.length) + SCREENSAVERS.length) % SCREENSAVERS.length
   stopScreensaver()
-  const name = startScreensaver(current)
+  // `reseed` forces a fresh look even when a seed is pinned, so the S key can
+  // still cycle through variations without editing the URL.
+  const seed = reseed ? undefined : (pinnedSeed ?? undefined)
+  const name = startScreensaver(current, seed)
   location.hash = String(current + 1)
   document.title = `Screensaver: ${name}`
   renderList()
@@ -164,6 +172,10 @@ window.addEventListener('keydown', (e) => {
     case 'ArrowRight': select(current + 1); break
     case 'ArrowLeft': select(current - 1); break
     case 'r': case 'R': select(current); break
+    // Restart with a brand-new seed. R replays the current look (honouring a
+    // pinned ?seed=), S deliberately draws a different one -- which is how you
+    // check that a saver's randomised ranges all actually look good.
+    case 's': case 'S': select(current, true); break
     case 'h': case 'H': hud.classList.toggle('hidden'); break
     case 'f': case 'F':
       if (!document.fullscreenElement) document.documentElement.requestFullscreen()

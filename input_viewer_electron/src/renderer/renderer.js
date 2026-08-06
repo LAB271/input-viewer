@@ -62,6 +62,11 @@ const state = {
   dvdScreensaverTimeout: null,
   // dvdScreensaverDelay: 10 * 1000, // 10 seconds in milliseconds
   dvdScreensaverDelay: 5 * 60 * 1000, // 5 minutes in milliseconds
+  // Rotation between screensavers while no-signal persists. 10 minutes is long
+  // enough that each saver's slow evolution (zoom tours, parameter drift) plays
+  // out, and short enough that a passer-by rarely sees the same one twice.
+  screensaverRotateInterval: null,
+  screensaverRotateDelay: 10 * 60 * 1000, // 10 minutes in milliseconds
   // Shake detection state
   shakeHistory: [],           // Array of {timestamp, direction}
   shakeWindowMs: 500,         // Time window to detect shakes (500ms)
@@ -729,12 +734,48 @@ function showDvdScreensaver() {
   elements.dvdOverlay.classList.remove('hidden')
   const name = startScreensaver() // random pick each activation
   console.log(`[Screensaver] Activated: ${name}`)
+  startScreensaverRotation()
+}
+
+/**
+ * Rotate to a different screensaver periodically.
+ *
+ * No-signal can persist for hours or days, and a single activation used to run
+ * one screensaver for that entire stretch. Each saver now randomises itself per
+ * activation (see screensavers/seed.js), but that variation is only ever seen
+ * *at* activation -- so without rotation a fresh look would appear once every
+ * no-signal event and then be frozen for the duration.
+ *
+ * The registry avoids repeating the previous pick, so a rotation always visibly
+ * changes the screen.
+ */
+function startScreensaverRotation() {
+  stopScreensaverRotation()
+  state.screensaverRotateInterval = setInterval(() => {
+    if (!isScreensaverRunning()) {
+      // Defensive: nothing should stop the saver without clearing this timer,
+      // but if it happens, don't resurrect the overlay from a background timer.
+      stopScreensaverRotation()
+      return
+    }
+    const name = startScreensaver() // stops the current one, fresh seed
+    console.log(`[Screensaver] Rotated to: ${name}`)
+  }, state.screensaverRotateDelay)
+}
+
+/** Cancel the rotation timer. */
+function stopScreensaverRotation() {
+  if (state.screensaverRotateInterval) {
+    clearInterval(state.screensaverRotateInterval)
+    state.screensaverRotateInterval = null
+  }
 }
 
 /**
  * Hide the DVD screensaver overlay
  */
 function hideDvdScreensaver() {
+  stopScreensaverRotation()
   stopScreensaver()
   elements.dvdOverlay.classList.add('hidden')
   console.log('[Screensaver] Deactivated')
