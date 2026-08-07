@@ -22,7 +22,7 @@
  * Randomising the *parameters* is what actually changes the shape.
  */
 import { createGLRuntime, createFullscreenPass, createPingPong, buildProgram, pointScale, particleSide, luminanceScale, fadeAlphaForHalfLife } from './gl-base.js'
-import { GLSL, createUniformCache } from './glsl-lib.js'
+import { GLSL, createUniformCache, canvasAspect } from './glsl-lib.js'
 import { createRng } from './seed.js'
 import { createPostChain } from './post-fx.js'
 
@@ -68,15 +68,24 @@ precision highp float;
 uniform sampler2D uState;
 uniform float uSide;
 uniform float uScale;
+uniform float uAspect;
 out float vIdx;
+
+${GLSL.worldSpace}
 void main() {
   int id = gl_VertexID;
   int x = id % int(uSide);
   int y = id / int(uSide);
   vec2 uv = (vec2(float(x), float(y)) + 0.5) / uSide;
   vec2 p = texture(uState, uv).xy;
-  // Clifford output is within roughly [-3,3]; scale to clip space.
-  gl_Position = vec4(p / 3.0, 0.0, 1.0);
+  // Clifford output spans roughly [-3,3] on both axes -- it is an intrinsically
+  // square attractor. Mapping it to world space keeps it square on any display;
+  // the old p/3.0 wrote clip space directly, so on the 5:1 wall it was
+  // squashed to a fifth of its height (issue #114).
+  //
+  // 0.46 rather than 0.5 leaves a small margin: the drifting a,b,c,d change the
+  // attractor's extent, so a tight fit clipped it on some parameter sets.
+  gl_Position = clipFromWorld(p * (0.46 / 3.0), uAspect);
   gl_PointSize = 1.0 * uScale;
   vIdx = float(id) / (uSide * uSide);
 }`
@@ -273,6 +282,7 @@ export default {
           gl.uniform1f(uDraw('uSide'), side)
           gl.uniform1f(uDraw('uTime'), time)
           gl.uniform1f(uDraw('uScale'), pointScale(canvas, 1.0))
+          gl.uniform1f(uDraw('uAspect'), canvasAspect(canvas))
           gl.uniform1f(uDraw('uLum'), luminanceScale(canvas))
           gl.uniform3f(uDraw('uPhase'), phase[0], phase[1], phase[2])
           gl.drawArrays(gl.POINTS, 0, COUNT)

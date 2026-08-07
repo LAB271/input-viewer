@@ -114,7 +114,18 @@ export default {
   create(canvas, seedValue) {
     let runtime = null, gl = null
     let sim = null, display = null, pp = null
-    const SIM = 320 // simulation grid resolution (square)
+    // Grid dimensions are derived from the canvas so cells stay roughly square
+    // and roughly the same size on any display (issue #114). The old fixed
+    // 320x320 was upscaled ~18.75x horizontally on the 6000x1200 wall, with
+    // NEAREST filtering, which is why the wall showed enormous square blocks.
+    //
+    // TARGET_CELL_PX is the on-screen size each chemical cell should occupy.
+    // Smaller means finer patterns but quadratically more simulation; 10px
+    // keeps the wall near 600x120 cells, comparable in cost to the old 320^2.
+    const TARGET_CELL_PX = 10
+    const MAX_CELLS = 640   // per axis, bounding worst-case cost
+    let simW = 320
+    let simH = 320
     let seedTimer = 0
 
     const rng = createRng(seedValue)
@@ -131,19 +142,19 @@ export default {
 
     function makeSeed() {
       // Fill mostly A=1, B=0, with a few random B blobs.
-      const data = new Float32Array(SIM * SIM * 4)
-      for (let i = 0; i < SIM * SIM; i++) {
+      const data = new Float32Array(simW * simH * 4)
+      for (let i = 0; i < simW * simH; i++) {
         data[i * 4 + 0] = 1.0
         data[i * 4 + 3] = 1.0
       }
       for (let s = 0; s < blobCount; s++) {
-        const cx = rng.int(0, SIM - 1)
-        const cy = rng.int(0, SIM - 1)
+        const cx = rng.int(0, simW - 1)
+        const cy = rng.int(0, simH - 1)
         for (let y = -blobRadius; y <= blobRadius; y++) {
           for (let x = -blobRadius; x <= blobRadius; x++) {
             const px = cx + x, py = cy + y
-            if (px < 0 || py < 0 || px >= SIM || py >= SIM) continue
-            data[(py * SIM + px) * 4 + 1] = 1.0
+            if (px < 0 || py < 0 || px >= simW || py >= simH) continue
+            data[(py * simW + px) * 4 + 1] = 1.0
           }
         }
       }
@@ -155,7 +166,9 @@ export default {
         runtime = createGLRuntime(canvas)
         gl = runtime.gl
         gl.getExtension('EXT_color_buffer_float')
-        pp = createPingPong(gl, SIM, SIM, makeSeed())
+        simW = Math.max(64, Math.min(MAX_CELLS, Math.round(canvas.width / TARGET_CELL_PX)))
+        simH = Math.max(64, Math.min(MAX_CELLS, Math.round(canvas.height / TARGET_CELL_PX)))
+        pp = createPingPong(gl, simW, simH, makeSeed())
         sim = createFullscreenPass(gl, SIM_FRAG)
         display = createFullscreenPass(gl, DISPLAY_FRAG)
         // Uniform locations are fixed for a program's lifetime. Looking them up
@@ -177,12 +190,18 @@ export default {
           }
           for (let i = 0; i < steps; i++) {
             gl.bindFramebuffer(gl.FRAMEBUFFER, pp.write.fbo)
-            gl.viewport(0, 0, SIM, SIM)
+            gl.viewport(0, 0, simW, simH)
             sim.draw((g) => {
               g.activeTexture(g.TEXTURE0)
               g.bindTexture(g.TEXTURE_2D, pp.read.tex)
+              // NEAREST for the simulation read: the chemistry samples exact
+              // neighbouring cells, and interpolating them would blur the
+              // reaction. The display pass sets LINEAR on this same texture,
+              // so each pass has to assert the filter it needs.
+              g.texParameteri(g.TEXTURE_2D, g.TEXTURE_MIN_FILTER, g.NEAREST)
+              g.texParameteri(g.TEXTURE_2D, g.TEXTURE_MAG_FILTER, g.NEAREST)
               g.uniform1i(uSim('uState'), 0)
-              g.uniform2f(uSim('uTexel'), 1 / SIM, 1 / SIM)
+              g.uniform2f(uSim('uTexel'), 1 / simW, 1 / simH)
               g.uniform1f(uSim('uFeed'), regime.feed)
               g.uniform1f(uSim('uKill'), regime.kill)
               const sx = i === 0 ? seedX : -1
@@ -197,6 +216,13 @@ export default {
           display.draw((g) => {
             g.activeTexture(g.TEXTURE0)
             g.bindTexture(g.TEXTURE_2D, pp.read.tex)
+            // LINEAR for the *display* read only. createPingPong uses NEAREST,
+            // which is right for simulation state -- the chemistry must
+            // round-trip exactly -- but upscaling a coarse grid with NEAREST is
+            // what gave the wall hard-edged blocks (issue #114). Sampling
+            // smoothly here costs nothing and does not touch the simulation.
+            g.texParameteri(g.TEXTURE_2D, g.TEXTURE_MIN_FILTER, g.LINEAR)
+            g.texParameteri(g.TEXTURE_2D, g.TEXTURE_MAG_FILTER, g.LINEAR)
             g.uniform1i(uDisplay('uState'), 0)
             g.uniform2f(uDisplay('uResolution'), canvas.width, canvas.height)
             g.uniform1f(uDisplay('uTime'), time)
