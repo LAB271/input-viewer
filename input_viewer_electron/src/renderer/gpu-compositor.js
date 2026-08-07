@@ -41,7 +41,17 @@ export async function supportsGpuCompositing() {
   }
 }
 
-const SHADER = `
+/**
+ * The compositing shader.
+ *
+ * Exported so it can be parse-checked without a GPU. No WebGPU adapter is
+ * available in CI or in a headless Electron run -- not even with
+ * forceFallbackAdapter -- so this module's runtime path cannot be exercised
+ * here. Validating that the WGSL at least parses is the part that can be
+ * checked, and it catches the most likely class of mistake in a shader nobody
+ * has been able to execute.
+ */
+export const COMPOSITOR_WGSL = `
 struct VertexOut {
   @builtin(position) pos: vec4f,
   @location(0) uv: vec2f,
@@ -103,7 +113,7 @@ export async function createGpuCompositor(canvas) {
   const format = navigator.gpu.getPreferredCanvasFormat()
   context.configure({ device, format, alphaMode: 'opaque' })
 
-  const module = device.createShaderModule({ code: SHADER })
+  const module = device.createShaderModule({ code: COMPOSITOR_WGSL })
   const pipeline = device.createRenderPipeline({
     layout: 'auto',
     vertex: { module, entryPoint: 'vs' },
