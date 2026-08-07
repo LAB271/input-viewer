@@ -23,7 +23,7 @@
  * flocking degenerates into a jitter or a frozen lattice.
  */
 import { createGLRuntime, createFullscreenPass, createPingPong, buildProgram, pointScale, particleSide, fadeAlphaForHalfLife, luminanceScale } from './gl-base.js'
-import { GLSL, createInstancedQuads, createUniformCache } from './glsl-lib.js'
+import { GLSL, createInstancedQuads, createUniformCache, canvasAspect } from './glsl-lib.js'
 import { createRng } from './seed.js'
 import { createPostChain } from './post-fx.js'
 
@@ -48,7 +48,10 @@ uniform vec2 uRadii;    // x = separation radius, y = alignment/cohesion radius
 uniform vec3 uWeights;  // separation, alignment, cohesion
 uniform float uCenter;  // pull toward the origin
 uniform vec2 uSpeed;    // x = max, y = min
+uniform float uAspect;  // width / height, for world-space extent
 out vec4 outState;
+
+${GLSL.worldSpace}
 
 const int SAMPLES = ${SAMPLES};
 
@@ -57,6 +60,7 @@ float rand(vec2 co) {
 }
 
 void main() {
+  vec2 ext = worldExtent(uAspect);
   vec2 uv = gl_FragCoord.xy * uTexel;
   vec4 s = texture(uState, uv);
   vec2 pos = s.xy;
@@ -71,13 +75,19 @@ void main() {
   for (int i = 0; i < SAMPLES; i++) {
     vec2 r = vec2(rand(vec2(seed, float(i))), rand(vec2(float(i), seed)));
     vec4 o = texture(uState, r);
-    vec2 d = o.xy - pos;
+    // Toroidal separation: a plain (o.xy - pos) makes neighbours just across
+    // the wrap seam read as maximally distant, which is what made the flock
+    // visibly tear at screen edges (issue #114).
+    vec2 d = torusDelta(pos, o.xy, ext);
     float dist = length(d);
     if (dist < 0.0001) continue;
     if (dist < uRadii.x) sep -= d / dist * (uRadii.x - dist);
     if (dist < uRadii.y) {
       ali += o.zw;
-      coh += o.xy;
+      // Accumulate the neighbour's position *relative to this boid*, so
+      // cohesion works across the seam too rather than dragging the flock
+      // back toward the middle of the field.
+      coh += d;
       count += 1.0;
     }
   }
@@ -87,7 +97,7 @@ void main() {
     ali /= count;
     coh /= count;
     acc += (ali - vel) * uWeights.y;
-    acc += (coh - pos) * uWeights.z;
+    acc += coh * uWeights.z;
   }
   // Gentle pull to center so the flock stays on-screen.
   acc += -pos * uCenter;
@@ -99,9 +109,9 @@ void main() {
   if (sp < uSpeed.y && sp > 0.0) vel = vel / sp * uSpeed.y;
   pos += vel * uDt;
 
-  // Soft wrap.
-  if (pos.x > 1.0) pos.x -= 2.0; if (pos.x < -1.0) pos.x += 2.0;
-  if (pos.y > 1.0) pos.y -= 2.0; if (pos.y < -1.0) pos.y += 2.0;
+  // Wrap in world space, so the field is uniform in both axes rather than
+  // 5x wider than tall.
+  pos = torusWrap(pos, ext);
 
   outState = vec4(pos, vel);
 }`
@@ -113,11 +123,13 @@ void main() {
 const DRAW_VERT = `#version 300 es
 precision highp float;
 uniform float uScale;
-uniform vec2 uAspect;   // keeps quads square in clip space
+uniform vec2 uQuadScale; // pixel->clip conversion, keeps quads square
+uniform float uAspect;   // width / height
 out float vDir;
 out vec2 vQuad;         // local quad coords in [-0.5, 0.5], for the arrow shape
 
 ${GLSL.instancedQuad}
+${GLSL.worldSpace}
 
 void main() {
   vec2 uv;
@@ -128,9 +140,11 @@ void main() {
 
   // Stretched along travel so the boid reads as an arrowhead with a heading,
   // not a blob. 2.5px was the old point size; the quad is sized to match.
-  vec2 size = vec2(2.5 * uScale) * uAspect;
+  vec2 size = vec2(2.5 * uScale) * uQuadScale;
   vec2 offset = orientedQuadOffset(vel, size, 2.2);
-  gl_Position = vec4(s.xy + offset, 0.0, 1.0);
+  // Positions are world space (issue #114); only this final step reintroduces
+  // the display aspect. The quad offset is already in clip units.
+  gl_Position = clipFromWorld(s.xy, uAspect) + vec4(offset, 0.0, 0.0);
 }`
 
 const DRAW_FRAG = `#version 300 es
@@ -180,6 +194,8 @@ export default {
     // particle count scales with canvas area, so it cannot be known here.
     let side = SIDE
     let COUNT = side * side
+    // Resolved in start(), once createGLRuntime has sized the canvas.
+    let aspect = 1
 
     // Drawn here rather than in start() so a start/stop/start cycle keeps the
     // same temperament; only a fresh create() picks a new one.
@@ -207,8 +223,10 @@ export default {
       const data = new Float32Array(COUNT * 4)
       for (let i = 0; i < COUNT; i++) {
         const a = rng.angle()
-        data[i * 4 + 0] = rng.range(-1, 1)
-        data[i * 4 + 1] = rng.range(-1, 1)
+        // World space: y spans [-0.5, 0.5] and x spans the aspect-scaled
+        // width, so the flock fills the display rather than a square.
+        data[i * 4 + 0] = rng.range(-0.5, 0.5) * aspect
+        data[i * 4 + 1] = rng.range(-0.5, 0.5)
         data[i * 4 + 2] = Math.cos(a) * 0.3
         data[i * 4 + 3] = Math.sin(a) * 0.3
       }
@@ -222,6 +240,7 @@ export default {
         gl.getExtension('EXT_color_buffer_float')
         // createGLRuntime has now sized the canvas, so area-based scaling is
         // valid. Must precede seed(), which allocates COUNT particles.
+        aspect = canvasAspect(canvas)
         side = particleSide(canvas, SIDE, MAX_SIDE)
         COUNT = side * side
         pp = createPingPong(gl, side, side, seed())
@@ -277,10 +296,14 @@ export default {
             g.uniform2f(uSim('uTexel'), 1 / side, 1 / side)
             g.uniform1f(uSim('uDt'), dt)
             g.uniform1f(uSim('uFrame'), frame)
-            g.uniform2f(uSim('uRadii'), sepRadius, aliRadius)
+            // Halved: these were tuned in clip space, which spans 2.0
+            // vertically, while world space spans 1.0. Same behaviour, and now
+            // the radii are genuinely circular rather than 5:1 ellipses.
+            g.uniform2f(uSim('uRadii'), sepRadius * 0.5, aliRadius * 0.5)
             g.uniform3f(uSim('uWeights'), weights[0], weights[1], weights[2])
             g.uniform1f(uSim('uCenter'), center)
-            g.uniform2f(uSim('uSpeed'), maxSpeed, minSpeed)
+            g.uniform1f(uSim('uAspect'), aspect)
+            g.uniform2f(uSim('uSpeed'), maxSpeed * 0.5, minSpeed * 0.5)
           })
           pp.swap()
 
@@ -313,7 +336,8 @@ export default {
           // Clip space is square regardless of the canvas, so a quad sized in
           // clip units is stretched by the aspect ratio. Dividing by width/height
           // keeps the arrowheads square -- badly needed on a 5:1 wall.
-          gl.uniform2f(uDraw('uAspect'),
+          gl.uniform1f(uDraw('uAspect'), aspect)
+          gl.uniform2f(uDraw('uQuadScale'),
             2.0 / canvas.width, 2.0 / canvas.height)
           gl.uniform3f(uDraw('uPhase'), phase[0], phase[1], phase[2])
           quads.draw(COUNT)
