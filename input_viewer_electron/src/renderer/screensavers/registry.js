@@ -31,6 +31,7 @@ import particleSwarm from './particle-swarm.js'
 import whiteParticles from './white-particles.js'
 import boids from './boids.js'
 import strangeAttractor from './strange-attractor.js'
+import voronoi from './voronoi.js'
 
 export const SCREENSAVERS = [
   dvdLogo,
@@ -44,7 +45,8 @@ export const SCREENSAVERS = [
   particleSwarm,
   whiteParticles,
   boids,
-  strangeAttractor
+  strangeAttractor,
+  voronoi
 ]
 
 let canvasEl = null
