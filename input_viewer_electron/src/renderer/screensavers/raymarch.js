@@ -31,11 +31,19 @@ float de(vec3 pos, float power) {
 
 vec3 calcNormal(vec3 p, float power) {
   vec2 e = vec2(0.001, 0.0);
-  return normalize(vec3(
+  vec3 g = vec3(
     de(p + e.xyy, power) - de(p - e.xyy, power),
     de(p + e.yxy, power) - de(p - e.yxy, power),
     de(p + e.yyx, power) - de(p - e.yyx, power)
-  ));
+  );
+  // Guard the zero gradient. Deep in the bulb the DE saturates and all six
+  // samples come back equal, so g is exactly zero and normalize() returns NaN.
+  // The NaN reached fragColor as a negative channel, which the old inline
+  // col/(1+col) happened to fold back into range -- removing that tonemap
+  // exposed it. Any fixed unit vector does here: these pixels are interior
+  // points the camera cannot actually see lit.
+  float len = length(g);
+  return len > 1e-12 ? g / len : vec3(0.0, 1.0, 0.0);
 }
 
 void mainImage(out vec4 fragColor, in vec2 fragCoord) {
@@ -90,9 +98,11 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
   }
   // Volumetric-ish glow toward the fractal surface.
   col += glow * vec3(0.5, 0.7, 1.0);
-  // Tone map + gamma.
-  col = col / (1.0 + col);
-  col = pow(col, vec3(0.4545));
+  // No tonemap or gamma here: the post chain owns both (ACES, then sRGB
+  // encode). Doing it inline as well double-applied them, lifting dark areas
+  // by over 100% -- blacks came out mid-grey and the fractal washed out.
+  // Emitting linear HDR is also what lets the bloom threshold mean something,
+  // since a pre-tonemapped signal is already squashed into [0,1].
   fragColor = vec4(col, 1.0);
 }
 `
@@ -104,9 +114,9 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
 // polygon edges, and a fullscreen shader has none.
 export default createShaderScreensaver('Raymarch Fractal', SHADER, {
   antialias: 4,
-  // Glow on the bright fractal surfaces. This saver already tonemapped inline
-  // (col/(1+col) then a gamma), which the chain now does properly in ACES --
-  // the inline version stays harmless because the chain tonemaps what it
-  // receives, but the bloom is the visible gain.
-  postFX: { bloom: { threshold: 0.58, knee: 0.35, intensity: 0.35, radius: 0.9 } }
+  // Glow on the bright fractal surfaces. The threshold is set against the
+  // saver's LINEAR output (p99 0.68, peak 3.5) now that the inline tonemap is
+  // gone. The old 0.58 was measured against a pre-tonemapped, [0,1]-squashed
+  // signal, so it caught far more of the frame than intended.
+  postFX: { bloom: { threshold: 0.48, knee: 0.35, intensity: 0.35, radius: 0.9 } }
 })
