@@ -28,7 +28,7 @@
  * position, so without it every activation falls into the same eddies.
  */
 import { createGLRuntime, createFullscreenPass, createPingPong, buildProgram, pointScale, particleSide, luminanceScale, fadeAlphaForHalfLife } from './gl-base.js'
-import { GLSL, createUniformCache } from './glsl-lib.js'
+import { GLSL, createUniformCache, canvasAspect } from './glsl-lib.js'
 import { createRng } from './seed.js'
 import { createPostChain } from './post-fx.js'
 
@@ -55,11 +55,13 @@ uniform float uFieldScale;
 uniform float uFlowSpeed;
 uniform float uEvolve;      // how fast the field itself churns
 uniform float uLifeSpan;
+uniform float uAspect;
 out vec4 outState;
 
 ${GLSL.hash}
 ${GLSL.simplex2d}
 ${GLSL.curl2d}
+${GLSL.worldSpace}
 
 void main() {
   vec2 uv = gl_FragCoord.xy * uTexel;
@@ -77,9 +79,12 @@ void main() {
   // Respawn on lifetime rather than wrapping at the edges. mod() wrapping
   // teleported particles across the screen mid-stream, which was the single
   // most jarring thing about the old motion.
-  if (life <= 0.0 || abs(pos.x) > 1.1 || abs(pos.y) > 1.1) {
+  // Bounds follow the world extent, so particles use the whole wall rather
+  // than a square region stretched across it (issue #114).
+  vec2 ext = worldExtent(uAspect) * 1.1;
+  if (life <= 0.0 || abs(pos.x) > ext.x || abs(pos.y) > ext.y) {
     vec2 r = rand2(uv + vec2(uTime, -uTime));
-    pos = r * 2.0 - 1.0;
+    pos = (r * 2.0 - 1.0) * worldExtent(uAspect);
     life = 0.6 + rand(uv * 3.1 + uTime) * 0.8;
     phase = rand(uv * 5.3 + uTime);
   }
@@ -97,12 +102,14 @@ uniform float uFieldOffsetX;
 uniform float uFieldOffsetY;
 uniform float uTime;
 uniform float uEvolve;
+uniform float uAspect;
 out float vSpeed;
 out float vAlpha;
 out float vPhase;
 
 ${GLSL.simplex2d}
 ${GLSL.curl2d}
+${GLSL.worldSpace}
 
 void main() {
   int id = gl_VertexID;
@@ -120,7 +127,7 @@ void main() {
   // Fade in and out over the lifetime so respawns are invisible.
   vAlpha = smoothstep(0.0, 0.15, s.w) * smoothstep(1.4, 0.5, s.w);
 
-  gl_Position = vec4(s.xy, 0.0, 1.0);
+  gl_Position = clipFromWorld(s.xy, uAspect);
   gl_PointSize = 1.5 * uScale;
 }`
 
@@ -169,6 +176,7 @@ export default {
     // Resolved in start(), once createGLRuntime has sized the canvas.
     let SIDE = PARTICLES_SIDE
     let COUNT = SIDE * SIDE
+    let aspect = 1
 
     // Drawn here rather than in start() so a start/stop/start cycle keeps the
     // same look; only a fresh create() picks a new one.
@@ -191,8 +199,8 @@ export default {
     function seed() {
       const data = new Float32Array(COUNT * 4)
       for (let i = 0; i < COUNT; i++) {
-        data[i * 4 + 0] = rng.range(-1, 1)
-        data[i * 4 + 1] = rng.range(-1, 1)
+        data[i * 4 + 0] = rng.range(-0.5, 0.5) * aspect
+        data[i * 4 + 1] = rng.range(-0.5, 0.5)
         data[i * 4 + 2] = rng.next()                 // per-particle phase
         data[i * 4 + 3] = 0.3 + rng.next() * 1.1     // life, staggered
       }
@@ -206,6 +214,7 @@ export default {
         gl.getExtension('EXT_color_buffer_float')
         // createGLRuntime has now sized the canvas, so area-based scaling is
         // valid. Must precede seed(), which allocates COUNT particles.
+        aspect = canvasAspect(canvas)
         SIDE = particleSide(canvas, PARTICLES_SIDE, MAX_SIDE)
         COUNT = SIDE * SIDE
         pp = createPingPong(gl, SIDE, SIDE, seed())
@@ -257,6 +266,7 @@ export default {
             g.uniform1f(uSim('uFlowSpeed'), flowSpeed)
             g.uniform1f(uSim('uEvolve'), evolve)
             g.uniform1f(uSim('uLifeSpan'), lifeSpan)
+            g.uniform1f(uSim('uAspect'), aspect)
           })
           pp.swap()
 
@@ -288,6 +298,7 @@ export default {
           gl.uniform1f(uDraw('uFieldOffsetY'), fieldOffset[1])
           gl.uniform1f(uDraw('uTime'), time)
           gl.uniform1f(uDraw('uEvolve'), evolve)
+          gl.uniform1f(uDraw('uAspect'), aspect)
           gl.uniform1f(uDraw('uLum'), luminanceScale(canvas))
           gl.uniform3f(uDraw('uPhase'), phase[0], phase[1], phase[2])
           gl.drawArrays(gl.POINTS, 0, COUNT)

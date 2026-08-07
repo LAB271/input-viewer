@@ -20,7 +20,7 @@
  * Deliberately monochrome -- there is no palette here and none should be added.
  */
 import { createGLRuntime, createFullscreenPass, createPingPong, buildProgram, pointScale, particleSide, fadeAlphaForHalfLife } from './gl-base.js'
-import { createUniformCache } from './glsl-lib.js'
+import { GLSL, createUniformCache, canvasAspect } from './glsl-lib.js'
 import { createRng } from './seed.js'
 
 const SIDE = 256 // 65,536 particles at 1080p
@@ -38,7 +38,10 @@ uniform vec2 uFieldOffset; // where in the noise field this activation samples
 uniform float uFieldScale;
 uniform float uFlowSpeed;
 uniform vec2 uDrift;       // gentle constant drift, mostly downward
+uniform float uAspect;
 out vec4 outState;
+
+${GLSL.worldSpace}
 
 float hash(vec2 p){ p=fract(p*vec2(123.34,456.21)); p+=dot(p,p+45.32); return fract(p.x*p.y); }
 float noise(vec2 p){
@@ -70,10 +73,13 @@ void main(){
   life -= uDt * 0.15;
 
   // Respawn dead/off-screen particles at a random edge.
-  if (life <= 0.0 || abs(pos.x) > 1.05 || abs(pos.y) > 1.05) {
+  // Bounds follow the world extent so the field covers the whole display
+  // rather than a square region stretched across it (issue #114).
+  vec2 ext = worldExtent(uAspect) * 1.05;
+  if (life <= 0.0 || abs(pos.x) > ext.x || abs(pos.y) > ext.y) {
     float r1 = hash(uv + uTime);
     float r2 = hash(uv * 1.7 - uTime);
-    pos = vec2(r1, r2) * 2.0 - 1.0;
+    pos = (vec2(r1, r2) * 2.0 - 1.0) * worldExtent(uAspect);
     life = 0.5 + hash(uv * 3.1 + uTime) * 0.8;
     phase = hash(uv * 5.3 + uTime);
   }
@@ -87,7 +93,10 @@ uniform float uSide;
 uniform float uTime;
 uniform float uScale;
 uniform float uTwinkle;
+uniform float uAspect;
 out float vAlpha;
+
+${GLSL.worldSpace}
 void main(){
   int id = gl_VertexID;
   int x = id % int(uSide);
@@ -98,7 +107,7 @@ void main(){
   float tw = 0.5 + 0.5 * sin(uTime * uTwinkle + s.z * 6.2831);
   float lifeFade = smoothstep(0.0, 0.2, s.w) * smoothstep(1.3, 0.6, s.w);
   vAlpha = tw * lifeFade;
-  gl_Position = vec4(s.xy, 0.0, 1.0);
+  gl_Position = clipFromWorld(s.xy, uAspect);
   // uScale multiplies the whole twinkle range, not just its floor, so the
   // 1..3px pulse keeps its proportions when scaled up for a large display.
   gl_PointSize = (1.0 + 2.0 * tw) * uScale;
@@ -137,6 +146,7 @@ export default {
     // particle count scales with canvas area, so it cannot be known here.
     let side = SIDE
     let count = SIDE * SIDE
+    let aspect = 1
 
     // Drawn here rather than in start() so a start/stop/start cycle keeps the
     // same look; only a fresh create() picks a new one.
@@ -164,8 +174,8 @@ export default {
     function seed() {
       const data = new Float32Array(count * 4)
       for (let i = 0; i < count; i++) {
-        data[i * 4 + 0] = rng.range(-1, 1)
-        data[i * 4 + 1] = rng.range(-1, 1)
+        data[i * 4 + 0] = rng.range(-0.5, 0.5) * aspect
+        data[i * 4 + 1] = rng.range(-0.5, 0.5)
         data[i * 4 + 2] = rng.next()              // phase
         data[i * 4 + 3] = 0.2 + rng.next()        // life
       }
@@ -179,6 +189,7 @@ export default {
         gl.getExtension('EXT_color_buffer_float')
         // createGLRuntime has now sized the canvas, so area-based scaling is
         // valid. Must precede seed(), which allocates count particles.
+        aspect = canvasAspect(canvas)
         side = particleSide(canvas, SIDE, MAX_SIDE)
         count = side * side
         pp = createPingPong(gl, side, side, seed())
@@ -211,6 +222,7 @@ export default {
             g.uniform1f(uSim('uFieldScale'), fieldScale)
             g.uniform1f(uSim('uFlowSpeed'), flowSpeed)
             g.uniform2f(uSim('uDrift'), drift[0], drift[1])
+            g.uniform1f(uSim('uAspect'), aspect)
           })
           pp.swap()
 
@@ -237,6 +249,7 @@ export default {
           // inflate the large-display floor multiplier.
           gl.uniform1f(uDraw('uScale'), pointScale(canvas, 2.0))
           gl.uniform1f(uDraw('uTwinkle'), twinkle)
+          gl.uniform1f(uDraw('uAspect'), aspect)
           gl.drawArrays(gl.POINTS, 0, count)
         })
       },
