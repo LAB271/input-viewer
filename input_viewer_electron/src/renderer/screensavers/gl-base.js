@@ -29,6 +29,12 @@
  */
 import { createRng } from './seed.js'
 
+// Frame-delta clamping. MAX_DT caps how far a simulation can advance in one
+// step, so a stall (hidden tab, GPU hitch) cannot explode it; FALLBACK_DT
+// covers the first frame, where there is no previous timestamp to difference.
+const MAX_DT = 0.05
+const FALLBACK_DT = 0.016
+
 const QUAD_VERTEX_SHADER = `#version 300 es
 in vec2 aPosition;
 void main() {
@@ -51,6 +57,76 @@ void main() {
   mainImage(color, gl_FragCoord.xy);
   outColor = color;
 }`
+
+/**
+ * Supersampling footer: evaluates mainImage several times per pixel on a
+ * rotated grid and averages (issue #116).
+ *
+ * The `antialias: true` context flag is MSAA on the default framebuffer, which
+ * samples *polygon edges*. A fullscreen fragment shader has no polygon edges,
+ * so it does nothing at all for these savers -- raymarch has a hard-aliased
+ * fractal silhouette, and the escape-time fractals render boundary filigree
+ * that is the textbook aliasing case. Both *move*, so they shimmer frame to
+ * frame, which is far more objectionable than static aliasing.
+ *
+ * Supersampling is the blunt fix, but it is the right one here: these are
+ * procedural shaders with no geometry to derive analytic coverage from, and
+ * they are already fill-rate bound, so the cost is predictable.
+ *
+ * The offsets are a rotated grid rather than an axis-aligned one. Regular grids
+ * align with exactly the horizontal and vertical features that alias worst;
+ * rotating decorrelates the sample pattern from the image structure.
+ */
+/**
+ * Samples per pixel for a canvas, given a saver's requested maximum.
+ *
+ * Supersampling multiplies fragment cost directly: 4x samples is 4x the
+ * raymarch work. That is affordable at 1080p and reckless at 6000x1200, which
+ * is 3.5x the pixels -- 4x samples there would be ~14x the fragment work of a
+ * 1080p single-sampled frame.
+ *
+ * So the count comes *down* as the canvas grows. That is the opposite of
+ * pointScale and particleSide, and deliberately: those fix things that get
+ * worse with size, whereas here the pixels are already smaller in angular terms
+ * on a big display, so each one aliases less visibly while costing more to
+ * supersample.
+ *
+ * @param {HTMLCanvasElement} canvas
+ * @param {number} requested - the saver's preferred sample count
+ * @returns {number} samples to actually use
+ */
+function resolveSampleCount(canvas, requested) {
+  const pixels = (canvas.width || 1) * (canvas.height || 1)
+  const hd = 1920 * 1080
+  if (pixels > hd * 3) return Math.min(requested, 2)   // wall, 4K+
+  if (pixels > hd * 1.4) return Math.min(requested, 4) // 1440p
+  return requested
+}
+
+function makeSupersampleFooter(samples) {
+  // Rotated-grid offsets in [-0.5, 0.5] pixel space, by sample count.
+  const PATTERNS = {
+    2: [[-0.25, -0.25], [0.25, 0.25]],
+    4: [[-0.375, -0.125], [0.125, -0.375], [-0.125, 0.375], [0.375, 0.125]],
+    // 8-rook pattern: one sample per row and per column, so every horizontal
+    // and vertical slice through the pixel is covered exactly once.
+    8: [
+      [-0.4375, -0.1875], [-0.1875, 0.3125], [0.0625, -0.4375], [0.3125, 0.0625],
+      [-0.3125, 0.1875], [-0.0625, -0.3125], [0.1875, 0.4375], [0.4375, -0.0625],
+    ],
+  }
+  const offsets = PATTERNS[samples] || PATTERNS[4]
+  const body = offsets
+    .map(([dx, dy]) => `  mainImage(s, gl_FragCoord.xy + vec2(${dx.toFixed(4)}, ${dy.toFixed(4)}));\n  acc += s;`)
+    .join('\n')
+  return `
+void main() {
+  vec4 acc = vec4(0.0);
+  vec4 s = vec4(0.0);
+${body}
+  outColor = acc / ${offsets.length}.0;
+}`
+}
 
 function compileShader(gl, type, source) {
   const shader = gl.createShader(type)
@@ -116,6 +192,8 @@ export function createGLRuntime(canvas) {
   let startTime = 0
   let frame = 0
   let onFrame = null
+  let lastTime = 0
+  let dt = FALLBACK_DT
 
   function resize() {
     const dpr = Math.min(window.devicePixelRatio || 1, 2)
@@ -186,10 +264,17 @@ export function createGLRuntime(canvas) {
     onFrame = cb
     startTime = performance.now()
     frame = 0
+    lastTime = 0
+    dt = FALLBACK_DT
     resize()
     const loop = () => {
       resize()
       const time = (performance.now() - startTime) / 1000
+      // Clamp so a stall (tab hidden, GPU hitch, first frame) cannot advance a
+      // simulation by a huge step and blow it up. Every simulation saver used
+      // to hand-roll this identical line; now the runtime owns it.
+      dt = Math.min(time - lastTime, MAX_DT) || FALLBACK_DT
+      lastTime = time
       if (onFrame) onFrame(time, frame, gl, runtime)
       frame++
       rafId = requestAnimationFrame(loop)
@@ -219,7 +304,14 @@ export function createGLRuntime(canvas) {
     start,
     stop,
     destroy,
-    get frame() { return frame }
+    get frame() { return frame },
+    /**
+     * Seconds since the previous frame, clamped. Read this instead of
+     * differencing `time` yourself: every simulation and every trail length
+     * should be wall-clock so the screensaver looks the same on a 60Hz desk
+     * monitor and a 120Hz panel.
+     */
+    get dt() { return dt }
   }
   return runtime
 }
@@ -242,24 +334,61 @@ export function createGLRuntime(canvas) {
  * @param {string} mainImageSource - GLSL providing mainImage()
  * @returns {{ name: string, create: (canvas: HTMLCanvasElement, seed?: number|string) => { start: Function, stop: Function } }}
  */
-export function createShaderScreensaver(name, mainImageSource) {
+export function createShaderScreensaver(name, mainImageSource, options = {}) {
+  const { antialias = 0, postFX = null } = options
   return {
     name,
     create(canvas, seed) {
       let runtime = null
       let prog = null
+      let post = null
+      let stopped = false
       return {
         start() {
+          stopped = false
           runtime = createGLRuntime(canvas)
-          const fragmentSource = FRAGMENT_HEADER + mainImageSource + FRAGMENT_MAINIMAGE_FOOTER
+          // Sample count is decided once the canvas is sized, so a desk monitor
+          // can pay less than the wall. Aliasing scales with how large and how
+          // distant the display is, and so should the cost of fixing it.
+          const samples = antialias ? resolveSampleCount(canvas, antialias) : 0
+          const footer = samples > 1
+            ? makeSupersampleFooter(samples)
+            : FRAGMENT_MAINIMAGE_FOOTER
+          const fragmentSource = FRAGMENT_HEADER + mainImageSource + footer
           prog = runtime.createQuadProgram(fragmentSource)
           const rng = createRng(seed)
           prog.setSeed([rng.next(), rng.next(), rng.next(), rng.next()])
+
+          const gl = runtime.gl
           runtime.start((time, frame) => {
+            // Render into the HDR target when the chain is up, otherwise
+            // straight to the screen. The chain is created asynchronously
+            // below, so the first few frames may take the direct path -- which
+            // is exactly the behaviour without postFX, so nothing breaks.
+            if (post) {
+              post.resize()
+              gl.bindFramebuffer(gl.FRAMEBUFFER, post.sceneTarget.fbo)
+              gl.viewport(0, 0, canvas.width, canvas.height)
+            }
             prog.draw(time, frame)
+            if (post) post.present()
           })
+
+          if (postFX) {
+            // Imported lazily: post-fx.js imports from this module, so a static
+            // import here would be circular.
+            import('./post-fx.js').then(({ createPostChain }) => {
+              if (stopped) return
+              post = createPostChain(gl, canvas, postFX)
+            }).catch(err => {
+              // Leaves the direct-to-screen path in place.
+              console.error('[Screensaver] Post-FX unavailable:', err)
+            })
+          }
         },
         stop() {
+          stopped = true
+          if (post) { post.destroy(); post = null }
           if (prog) { prog.destroy(); prog = null }
           if (runtime) { runtime.destroy(); runtime = null }
         }
@@ -332,6 +461,100 @@ export function createFloatTarget(gl, w, h, data = null) {
   gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0)
   gl.bindFramebuffer(gl.FRAMEBUFFER, null)
   return { tex, fbo, w, h }
+}
+
+/**
+ * Off-screen HDR colour target for accumulating trails (issue #113).
+ *
+ * Distinct from createFloatTarget, which backs *simulation state* -- that wants
+ * RGBA32F and NEAREST for exact round-tripping of positions and velocities.
+ * This is for *colour*, where RGBA16F is the better trade: ample dynamic range
+ * for accumulation, half the bandwidth of 32F, and LINEAR-filterable so a later
+ * bloom/downsample chain can sample it (issue #112).
+ *
+ * Why accumulate off-screen at all: the default framebuffer is 8-bit, and
+ * additive trails there have two visible defects. Faint values quantise hard --
+ * a single attractor point contributes roughly 15/255 -- and, worse, fading by
+ * a small alpha has a quantisation floor. An 0.04-alpha black quad cannot take
+ * a channel below about 1/(255*0.04), so dim residue never reaches zero and
+ * every filament the saver has ever drawn leaves permanent ghosting.
+ *
+ * Falls back to null when EXT_color_buffer_float is unavailable, so callers can
+ * keep their 8-bit path rather than failing to start.
+ *
+ * @param {WebGL2RenderingContext} gl
+ * @param {number} w
+ * @param {number} h
+ * @returns {{tex: WebGLTexture, fbo: WebGLFramebuffer, w: number, h: number,
+ *            resize: (w: number, h: number) => void, destroy: () => void}|null}
+ */
+export function createHdrColorTarget(gl, w, h) {
+  if (!gl.getExtension('EXT_color_buffer_float')) return null
+  // Not fatal if absent: only a smooth-sampling bloom pass needs it, and the
+  // target itself still works with NEAREST.
+  gl.getExtension('OES_texture_float_linear')
+
+  const tex = gl.createTexture()
+  const fbo = gl.createFramebuffer()
+
+  function allocate(width, height) {
+    gl.bindTexture(gl.TEXTURE_2D, tex)
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, Math.max(1, width), Math.max(1, height),
+      0, gl.RGBA, gl.HALF_FLOAT, null)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo)
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+  }
+
+  allocate(w, h)
+
+  const target = {
+    tex,
+    fbo,
+    w: Math.max(1, w),
+    h: Math.max(1, h),
+    /** Reallocate on canvas resize. Discards accumulated contents. */
+    resize(width, height) {
+      const nw = Math.max(1, width)
+      const nh = Math.max(1, height)
+      if (nw === target.w && nh === target.h) return
+      target.w = nw
+      target.h = nh
+      allocate(nw, nh)
+    },
+    destroy() {
+      gl.deleteTexture(tex)
+      gl.deleteFramebuffer(fbo)
+    },
+  }
+  return target
+}
+
+/**
+ * Per-frame fade alpha for a target trail length, independent of frame rate.
+ *
+ * Trails were implemented as a fullscreen black quad at a *constant* per-frame
+ * alpha, which makes their length a function of refresh rate: the same 0.08 is
+ * twice as aggressive at 120Hz as at 60Hz, so a trail is half as long. For a
+ * videowall app that is exactly the wrong dependency.
+ *
+ * Framing it as a half-life instead: after `halfLifeSeconds` of wall clock, a
+ * trail should have decayed to half its brightness, whatever the frame rate.
+ * Per frame that means keeping 2^(-dt/halfLife), so the fade alpha is one minus
+ * that.
+ *
+ * @param {number} dt - seconds since the previous frame (runtime.dt)
+ * @param {number} halfLifeSeconds - time for a trail to halve in brightness
+ * @returns {number} alpha in [0,1] for the fade quad
+ */
+export function fadeAlphaForHalfLife(dt, halfLifeSeconds) {
+  if (!(halfLifeSeconds > 0)) return 1
+  const keep = Math.pow(2, -Math.max(0, dt) / halfLifeSeconds)
+  return Math.min(1, Math.max(0, 1 - keep))
 }
 
 /**

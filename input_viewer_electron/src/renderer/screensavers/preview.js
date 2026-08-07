@@ -18,9 +18,11 @@ import {
   stopScreensaver,
   listScreensavers
 } from './registry.js'
+import { getActivePostChain } from './post-fx.js'
 
 const canvas = document.getElementById('screensaver-canvas')
 const listEl = document.getElementById('list')
+
 const hud = document.getElementById('hud')
 const fpsEl = document.getElementById('fps')
 const modeEl = document.getElementById('mode')
@@ -95,12 +97,38 @@ function cycleWashout() {
   updateMode()
 }
 
+let bloomOverride = null
+
+function adjustBloom(key, delta) {
+  const chain = getActivePostChain()
+  if (!chain) { modeEl.textContent = 'no post chain on this screensaver'; return }
+  const p = chain.params
+  if (bloomOverride === null) bloomOverride = { ...p }
+  p[key] = Math.max(0, +(p[key] + delta).toFixed(3))
+  updateMode()
+}
+
+function resetBloom() {
+  const chain = getActivePostChain()
+  if (!chain || bloomOverride === null) return
+  Object.assign(chain.params, bloomOverride)
+  bloomOverride = null
+  updateMode()
+}
+
+function bloomLabel() {
+  const chain = getActivePostChain()
+  if (!chain) return ''
+  const p = chain.params
+  return ` · bloom thr ${p.threshold.toFixed(2)} int ${p.intensity.toFixed(2)}`
+}
+
 function updateMode() {
   const res = wallMode
     ? `${WALL_W}x${WALL_H} (wall)`
     : `${canvas.width}x${canvas.height} (window)`
   const light = washout ? ` · washout ${Math.round(washout * 100)}%` : ''
-  modeEl.textContent = res + light
+  modeEl.textContent = res + light + bloomLabel()
 }
 
 window.addEventListener('resize', () => {
@@ -189,6 +217,14 @@ window.addEventListener('keydown', (e) => {
       select(current)
       break
     case 'l': case 'L': cycleWashout(); break
+    // Bloom tuning, for savers that use the post chain. Threshold decides how
+    // much of the image glows; intensity how strongly. Read the values off the
+    // HUD and paste them into the saver once it looks right.
+    case '[': adjustBloom('threshold', -0.2); break
+    case ']': adjustBloom('threshold', +0.2); break
+    case '-': case '_': adjustBloom('intensity', -0.05); break
+    case '=': case '+': adjustBloom('intensity', +0.05); break
+    case '0': resetBloom(); break
   }
 })
 

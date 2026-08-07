@@ -5,8 +5,10 @@
  * lit and orbited by the camera. Heavy GPU; looks great on discrete cards.
  */
 import { createShaderScreensaver } from './gl-base.js'
+import { GLSL } from './glsl-lib.js'
 
-const SHADER = /* glsl */ `
+const SHADER = /* glsl */ `${GLSL.palette}
+
 // Mandelbulb distance estimator.
 float de(vec3 pos, float power) {
   vec3 z = pos;
@@ -83,7 +85,7 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
     float diff = max(dot(n, lightDir), 0.0);
     float fres = pow(1.0 - max(dot(n, -rd), 0.0), 3.0);
     vec3 phase = vec3(0.0, 0.33, 0.67) + iSeed.x;
-    vec3 base = 0.5 + 0.5 * cos(6.2831 * (length(p) * 0.6 + phase + 0.05 * iTime));
+    vec3 base = palettePerceptual(length(p) * 0.6 + 0.05 * iTime, phase);
     col = base * (0.2 + diff) + fres * vec3(0.4, 0.6, 1.0);
   }
   // Volumetric-ish glow toward the fractal surface.
@@ -95,4 +97,16 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
 }
 `
 
-export default createShaderScreensaver('Raymarch Fractal', SHADER)
+// 4x supersampling (issue #116). This saver is the worst aliasing case in the
+// set: a hard fractal silhouette with no multi-sampling and no distance-based
+// edge softening, and the noisy DE edges shimmer frame to frame as the camera
+// orbits. The context's antialias flag does nothing here -- MSAA samples
+// polygon edges, and a fullscreen shader has none.
+export default createShaderScreensaver('Raymarch Fractal', SHADER, {
+  antialias: 4,
+  // Glow on the bright fractal surfaces. This saver already tonemapped inline
+  // (col/(1+col) then a gamma), which the chain now does properly in ACES --
+  // the inline version stays harmless because the chain tonemaps what it
+  // receives, but the bloom is the visible gain.
+  postFX: { bloom: { threshold: 0.58, knee: 0.35, intensity: 0.35, radius: 0.9 } }
+})

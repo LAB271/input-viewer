@@ -14,10 +14,12 @@
  * whole set, since the destination was a single hardcoded point.
  */
 import { createShaderScreensaver } from './gl-base.js'
+import { GLSL } from './glsl-lib.js'
 
-const SHADER = /* glsl */ `
+const SHADER = /* glsl */ `${GLSL.palette}
+
 vec3 palette(float t, vec3 phase) {
-  return 0.5 + 0.5 * cos(6.2831 * (t + phase));
+  return palettePerceptual(t, phase);
 }
 
 // Eight boundary points that stay detailed all the way down. Hand-picked
@@ -74,4 +76,12 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
 }
 `
 
-export default createShaderScreensaver('Mandelbrot', SHADER)
+// 4x supersampling (issue #116). Escape-time boundary filigree is the textbook
+// aliasing case, and the auto-zoom means it moves, so it shimmers. Smooth
+// iteration colouring already helps; this handles what it cannot.
+export default createShaderScreensaver('Mandelbrot', SHADER, {
+  antialias: 4,
+  // Bloom on the bright boundary filigree, which is where all the detail is.
+  // Threshold above the interior so the body of the set stays dark.
+  postFX: { bloom: { threshold: 0.3, knee: 0.3, intensity: 0.3, radius: 0.8 } }
+})

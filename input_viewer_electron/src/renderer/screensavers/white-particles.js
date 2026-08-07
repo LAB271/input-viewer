@@ -19,7 +19,8 @@
  *
  * Deliberately monochrome -- there is no palette here and none should be added.
  */
-import { createGLRuntime, createFullscreenPass, createPingPong, buildProgram, pointScale, particleSide } from './gl-base.js'
+import { createGLRuntime, createFullscreenPass, createPingPong, buildProgram, pointScale, particleSide, fadeAlphaForHalfLife } from './gl-base.js'
+import { createUniformCache } from './glsl-lib.js'
 import { createRng } from './seed.js'
 
 const SIDE = 256 // 65,536 particles at 1080p
@@ -44,6 +45,11 @@ float noise(vec2 p){
   vec2 i=floor(p), f=fract(p); vec2 u=f*f*(3.0-2.0*f);
   return mix(mix(hash(i),hash(i+vec2(1,0)),u.x),mix(hash(i+vec2(0,1)),hash(i+vec2(1,1)),u.x),u.y);
 }
+// Deliberately the original hand-rolled value noise, not the shared simplex
+// library. Simplex is objectively the better noise -- no lattice artifacts, and
+// curl2d evolves the field rather than sliding it -- but it gave this saver a
+// different character, and the calm drifting look here was preferred. The other
+// savers use the shared library; this one keeps its own field on purpose.
 vec2 flow(vec2 p,float t){
   float e=0.08;
   float a=noise(p+vec2(0,e)+t)-noise(p-vec2(0,e)+t);
@@ -110,17 +116,23 @@ void main(){
   outColor = vec4(vec3(1.0), vAlpha * soft); // white
 }`
 
+// Trail fade. Alpha arrives per frame so trail length is wall-clock rather
+// than frame-count (issue #113).
 const FADE_FRAG = `#version 300 es
 precision highp float;
+uniform float uFadeAlpha;
 out vec4 outColor;
-void main(){ outColor = vec4(0.0, 0.0, 0.0, 0.12); }`
+void main(){ outColor = vec4(0.0, 0.0, 0.0, uFadeAlpha); }`
+
+// Reproduces the previous look at 60Hz, where the fixed 0.12 alpha halved a
+// trail's brightness in ~0.09s.
+const TRAIL_HALF_LIFE_S = 0.090
 
 export default {
   name: 'White Particles',
   create(canvas, seedValue) {
     let runtime = null, gl = null
     let sim = null, fade = null, drawProg = null, pp = null, vao = null
-    let last = 0
     // Resolved in start(), once createGLRuntime has sized the canvas: the
     // particle count scales with canvas area, so it cannot be known here.
     let side = SIDE
@@ -174,26 +186,31 @@ export default {
         fade = createFullscreenPass(gl, FADE_FRAG)
         drawProg = buildProgram(gl, DRAW_VERT, DRAW_FRAG)
         vao = gl.createVertexArray()
-        last = 0
+        // Uniform locations are fixed for a program's lifetime; looking them up
+        // inside the per-frame draw callback was a string-keyed driver query
+        // every frame for values that never move (issue #115).
+        const uSim = createUniformCache(gl, sim.program)
+        const uFade = createUniformCache(gl, fade.program)
+        const uDraw = createUniformCache(gl, drawProg.program)
 
-        runtime.start((time) => {
-          const dt = Math.min(time - last, 0.05) || 0.016
-          last = time
+        runtime.start((time, frameCount, glCtx, rt) => {
+          // Runtime owns the clamped frame delta now (issue #113).
+          const dt = rt.dt
 
           gl.disable(gl.BLEND)
           gl.bindFramebuffer(gl.FRAMEBUFFER, pp.write.fbo)
           gl.viewport(0, 0, side, side)
-          sim.draw((g, p) => {
+          sim.draw((g) => {
             g.activeTexture(g.TEXTURE0)
             g.bindTexture(g.TEXTURE_2D, pp.read.tex)
-            g.uniform1i(g.getUniformLocation(p, 'uState'), 0)
-            g.uniform2f(g.getUniformLocation(p, 'uTexel'), 1 / side, 1 / side)
-            g.uniform1f(g.getUniformLocation(p, 'uTime'), time)
-            g.uniform1f(g.getUniformLocation(p, 'uDt'), dt)
-            g.uniform2f(g.getUniformLocation(p, 'uFieldOffset'), fieldOffset[0], fieldOffset[1])
-            g.uniform1f(g.getUniformLocation(p, 'uFieldScale'), fieldScale)
-            g.uniform1f(g.getUniformLocation(p, 'uFlowSpeed'), flowSpeed)
-            g.uniform2f(g.getUniformLocation(p, 'uDrift'), drift[0], drift[1])
+            g.uniform1i(uSim('uState'), 0)
+            g.uniform2f(uSim('uTexel'), 1 / side, 1 / side)
+            g.uniform1f(uSim('uTime'), time)
+            g.uniform1f(uSim('uDt'), dt)
+            g.uniform2f(uSim('uFieldOffset'), fieldOffset[0], fieldOffset[1])
+            g.uniform1f(uSim('uFieldScale'), fieldScale)
+            g.uniform1f(uSim('uFlowSpeed'), flowSpeed)
+            g.uniform2f(uSim('uDrift'), drift[0], drift[1])
           })
           pp.swap()
 
@@ -202,21 +219,24 @@ export default {
           // Fade for soft trails, then additive white points.
           gl.enable(gl.BLEND)
           gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA)
-          fade.draw()
+          fade.draw((g) => {
+            g.uniform1f(uFade('uFadeAlpha'),
+              fadeAlphaForHalfLife(dt, TRAIL_HALF_LIFE_S))
+          })
           gl.blendFunc(gl.SRC_ALPHA, gl.ONE)
           gl.useProgram(drawProg.program)
           gl.bindVertexArray(vao)
           gl.activeTexture(gl.TEXTURE0)
           gl.bindTexture(gl.TEXTURE_2D, pp.read.tex)
-          gl.uniform1i(gl.getUniformLocation(drawProg.program, 'uState'), 0)
-          gl.uniform1f(gl.getUniformLocation(drawProg.program, 'uSide'), side)
-          gl.uniform1f(gl.getUniformLocation(drawProg.program, 'uTime'), time)
+          gl.uniform1i(uDraw('uState'), 0)
+          gl.uniform1f(uDraw('uSide'), side)
+          gl.uniform1f(uDraw('uTime'), time)
           // Base size is the twinkle midpoint (1.0 + 2.0 * 0.5), the honest
           // representative of a size that animates over 1..3px. Passing the
           // 1.0 floor would overstate how small the points actually are and
           // inflate the large-display floor multiplier.
-          gl.uniform1f(gl.getUniformLocation(drawProg.program, 'uScale'), pointScale(canvas, 2.0))
-          gl.uniform1f(gl.getUniformLocation(drawProg.program, 'uTwinkle'), twinkle)
+          gl.uniform1f(uDraw('uScale'), pointScale(canvas, 2.0))
+          gl.uniform1f(uDraw('uTwinkle'), twinkle)
           gl.drawArrays(gl.POINTS, 0, count)
         })
       },

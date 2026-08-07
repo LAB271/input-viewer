@@ -1,68 +1,90 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: 2025-2026 Schuberg Philis / Lab271
 /**
- * GPU Particle Swarm — tens of thousands of particles orbiting moving
- * attractors. Particle position+velocity live in float textures, updated by a
- * fullscreen sim pass, then drawn as additive points (the point's vertex
- * shader fetches its position from the state texture by gl_VertexID).
+ * Particle Swarm — tens of thousands of particles carried through a slowly
+ * evolving curl-noise field, leaving luminous trails on black.
  *
- * Per-activation variation: the two attractors' orbit radii, angular rates and
- * per-axis phase offsets are randomised, along with the attraction and swirl
- * strengths and the palette phase.
+ * Rewritten. The previous version had three problems, all of which showed:
  *
- * The phase offsets are the load-bearing part. The attractors were pure
- * functions of a uTime that gl-base.js resets to 0 on every start(), so both
- * always departed from the same point on the same circle and the swarm's whole
- * choreography -- which lobe forms first, where the two streams braid -- was
- * identical every time. Randomising the rates alone would only change the
- * tempo of that same opening; the phases are what move the starting points.
+ *   - It was the only saver on a *white* background (multiply blend, "ink on
+ *     paper"). On the no-signal videowall that meant every other saver is dark
+ *     and this one flooded the room with a full-screen field of light.
+ *   - Motion came from two inverse-square attractors, so particles slingshotted
+ *     violently past them, and `mod()` wrapping teleported them across the
+ *     screen mid-flight. The result read as chaotic rather than graceful.
+ *   - Being multiply-on-white, it could not use the HDR/bloom chain the other
+ *     particle savers gained (#112, #113), so it was stuck at 8-bit.
+ *
+ * Now: divergence-free curl noise (shared library, #115) advects the particles.
+ * Because the field is divergence-free they neither bunch into knots nor spread
+ * out — they follow coherent streams that braid and separate. Instead of
+ * wrapping, particles respawn on a lifetime, fading in and out so there is no
+ * teleport. Drawn additively on black through the post chain, so dense braids
+ * bloom and the trails accumulate in HDR.
+ *
+ * Per-activation variation: where in the noise field this run samples, the
+ * field scale, flow speed, evolution rate, lifetime spread and palette phase.
+ * The spatial offset matters most — the field is sampled at the particle's own
+ * position, so without it every activation falls into the same eddies.
  */
-import { createGLRuntime, createFullscreenPass, createPingPong, buildProgram, pointScale, particleSide } from './gl-base.js'
+import { createGLRuntime, createFullscreenPass, createPingPong, buildProgram, pointScale, particleSide, luminanceScale, fadeAlphaForHalfLife } from './gl-base.js'
+import { GLSL, createUniformCache } from './glsl-lib.js'
 import { createRng } from './seed.js'
+import { createPostChain } from './post-fx.js'
 
 const PARTICLES_SIDE = 256 // 256x256 = 65,536 particles
 // Scales up with canvas area; capped to bound worst-case GPU cost,
 // so very large displays go slightly sparser rather than very expensive.
 const MAX_SIDE = 384
 
+// Trail half-life. Long enough that a stream draws the shape of the flow,
+// short enough that the frame does not saturate: trails accumulate to roughly
+// 1/(1-keepPerFrame), so 0.55s meant a ~48x steady-state build-up and the
+// whole screen washed out. 0.18s is ~16x, which reads as a trail rather than
+// a fog.
+const TRAIL_HALF_LIFE_S = 0.18
+
 const SIM_FRAG = `#version 300 es
 precision highp float;
-uniform sampler2D uState;   // xy=pos (clip space-ish), zw=vel
+uniform sampler2D uState;   // xy = pos [-1,1], z = seed phase, w = life
 uniform vec2 uTexel;
 uniform float uTime;
 uniform float uDt;
-uniform vec2 uRadii;    // orbit radius of each attractor
-uniform vec4 uOrbitA;   // attractor 1: xy = x/y angular rates, zw = x/y phases
-uniform vec4 uOrbitB;   // attractor 2: same layout
-uniform vec2 uForce;    // x = attraction strength, y = tangential swirl
+uniform vec2 uFieldOffset;  // where in the noise field this activation samples
+uniform float uFieldScale;
+uniform float uFlowSpeed;
+uniform float uEvolve;      // how fast the field itself churns
+uniform float uLifeSpan;
 out vec4 outState;
+
+${GLSL.hash}
+${GLSL.simplex2d}
+${GLSL.curl2d}
 
 void main() {
   vec2 uv = gl_FragCoord.xy * uTexel;
   vec4 s = texture(uState, uv);
   vec2 pos = s.xy;
-  vec2 vel = s.zw;
+  float phase = s.z;
+  float life = s.w;
 
-  // Two orbiting attractors. Radii, rates and phases come from the host so
-  // each activation starts them somewhere else on differently-shaped orbits.
-  vec2 a1 = uRadii.x * vec2(cos(uTime * uOrbitA.x + uOrbitA.z), sin(uTime * uOrbitA.y + uOrbitA.w));
-  vec2 a2 = uRadii.y * vec2(cos(uTime * uOrbitB.x + uOrbitB.z), sin(uTime * uOrbitB.y + uOrbitB.w));
+  // Divergence-free advection: particles are carried by the field rather than
+  // pulled toward point attractors, so they form streams instead of slingshots.
+  vec2 v = curl2d(pos * uFieldScale + uFieldOffset, uTime * uEvolve);
+  pos += v * uDt * uFlowSpeed;
+  life -= uDt / uLifeSpan;
 
-  vec2 d1 = a1 - pos; vec2 d2 = a2 - pos;
-  float r1 = max(dot(d1, d1), 0.01);
-  float r2 = max(dot(d2, d2), 0.01);
-  vec2 acc = d1 / r1 * uForce.x + d2 / r2 * uForce.x;
-  // Tangential swirl for orbiting motion.
-  acc += vec2(-d1.y, d1.x) / r1 * uForce.y;
+  // Respawn on lifetime rather than wrapping at the edges. mod() wrapping
+  // teleported particles across the screen mid-stream, which was the single
+  // most jarring thing about the old motion.
+  if (life <= 0.0 || abs(pos.x) > 1.1 || abs(pos.y) > 1.1) {
+    vec2 r = rand2(uv + vec2(uTime, -uTime));
+    pos = r * 2.0 - 1.0;
+    life = 0.6 + rand(uv * 3.1 + uTime) * 0.8;
+    phase = rand(uv * 5.3 + uTime);
+  }
 
-  vel += acc * uDt * 60.0;
-  vel *= 0.985; // damping
-  pos += vel * uDt;
-
-  // Wrap around the [-1,1] box.
-  pos = mod(pos + 1.0, 2.0) - 1.0;
-
-  outState = vec4(pos, vel);
+  outState = vec4(pos, phase, life);
 }`
 
 const DRAW_VERT = `#version 300 es
@@ -70,58 +92,100 @@ precision highp float;
 uniform sampler2D uState;
 uniform float uSide;
 uniform float uScale;
+uniform float uFieldScale;
+uniform float uFieldOffsetX;
+uniform float uFieldOffsetY;
+uniform float uTime;
+uniform float uEvolve;
 out float vSpeed;
+out float vAlpha;
+out float vPhase;
+
+${GLSL.simplex2d}
+${GLSL.curl2d}
+
 void main() {
   int id = gl_VertexID;
   int x = id % int(uSide);
   int y = id / int(uSide);
   vec2 uv = (vec2(float(x), float(y)) + 0.5) / uSide;
   vec4 s = texture(uState, uv);
-  vSpeed = length(s.zw);
+
+  // Speed drives colour, so the fast filaments read hotter than the slow
+  // eddies -- that is what makes the flow structure legible.
+  vec2 v = curl2d(s.xy * uFieldScale + vec2(uFieldOffsetX, uFieldOffsetY), uTime * uEvolve);
+  vSpeed = length(v);
+  vPhase = s.z;
+
+  // Fade in and out over the lifetime so respawns are invisible.
+  vAlpha = smoothstep(0.0, 0.15, s.w) * smoothstep(1.4, 0.5, s.w);
+
   gl_Position = vec4(s.xy, 0.0, 1.0);
   gl_PointSize = 1.5 * uScale;
 }`
 
 const DRAW_FRAG = `#version 300 es
 precision highp float;
+${GLSL.palette}
 in float vSpeed;
+in float vAlpha;
+in float vPhase;
 uniform vec3 uPhase;
+uniform float uLum;
 out vec4 outColor;
 void main() {
-  vec3 col = 0.5 + 0.5 * cos(6.2831 * (vSpeed * 2.0 + uPhase));
-  // Multiply blend over a white background ("ink on paper"): emit a value
-  // close to 1.0 so a single particle barely tints the paper and overlaps
-  // build up saturated color. mix toward white keeps it light and airy.
-  vec3 ink = mix(vec3(1.0), col, 0.5);
-  outColor = vec4(ink, 1.0);
+  // Round, soft-edged sprite. GL_POINTS defaults to a hard axis-aligned square,
+  // which on the wall means visible blocks at pointScale's 4px floor (#116).
+  vec2 d = gl_PointCoord - 0.5;
+  float r2 = dot(d, d);
+  if (r2 > 0.25) discard;
+  float soft = smoothstep(0.25, 0.0, r2);
+
+  // Colour by speed, with a small per-particle offset so a stream is not one
+  // flat hue. Normalised through tanh so the palette does not saturate the
+  // moment the field happens to be energetic.
+  float t = tanh(vSpeed * 0.35) + vPhase * 0.12;
+  vec3 col = palettePerceptual(t, uPhase);
+
+  // Additive on black, no clamp: the post chain tonemaps, so dense braids
+  // carry real information above 1.0 instead of clipping to white.
+  outColor = vec4(col * vAlpha * soft * 0.10 * uLum, 1.0);
 }`
+
+// Trail fade, alpha supplied per frame so trail length is wall-clock rather
+// than frame-count (issue #113).
+const FADE_FRAG = `#version 300 es
+precision highp float;
+uniform float uFadeAlpha;
+out vec4 outColor;
+void main() { outColor = vec4(0.0, 0.0, 0.0, uFadeAlpha); }`
 
 export default {
   name: 'Particle Swarm',
   create(canvas, seedValue) {
     let runtime = null, gl = null
-    let sim = null, drawProg = null, pp = null, vao = null
-    let last = 0
-    // Resolved in start(), once createGLRuntime has sized the canvas: the
-    // particle count scales with canvas area, so it cannot be known here.
+    let sim = null, fade = null, drawProg = null, pp = null, vao = null
+    let post = null
+    // Resolved in start(), once createGLRuntime has sized the canvas.
     let SIDE = PARTICLES_SIDE
     let COUNT = SIDE * SIDE
 
     // Drawn here rather than in start() so a start/stop/start cycle keeps the
     // same look; only a fresh create() picks a new one.
     const rng = createRng(seedValue)
-    // 0.45..0.75 around the tuned 0.6. Below ~0.4 the two attractors sit close
-    // enough to merge into one blob; above ~0.8 they orbit into the wrap seam
-    // at |pos| = 1 and the swarm shears instead of braiding.
-    const radii = [rng.range(0.45, 0.75), rng.range(0.45, 0.75)]
-    // Rates around the tuned (0.5, 0.4) and (0.3, 0.6). Kept apart from each
-    // other per attractor: equal x/y rates degenerate the ellipse to a line.
-    const orbitA = [rng.around(0.5, 0.15), rng.around(0.4, 0.15), rng.phase(), rng.phase()]
-    const orbitB = [rng.around(0.3, 0.12), rng.around(0.6, 0.18), rng.phase(), rng.phase()]
-    // Attraction near 0.02 and swirl near 0.01. Both are tight: the 0.985
-    // damping is balanced against these, and much more attraction collapses the
-    // swarm onto the attractors while much more swirl flings it to the wrap box.
-    const force = [rng.range(0.016, 0.026), rng.range(0.007, 0.014)]
+    // The load-bearing one. The field is sampled at the particle's own
+    // position, so without a spatial offset every activation falls into the
+    // same eddies in the same places. A time offset would not fix that: it
+    // only slides the same pattern past.
+    const fieldOffset = [rng.range(0, 64), rng.range(0, 64)]
+    // Lower is broad lazy sweeps, higher is a busier braided field. Both read
+    // as coherent flow, which is the point.
+    const fieldScale = rng.range(0.9, 1.8)
+    const flowSpeed = rng.range(0.08, 0.16)
+    // How fast the field itself churns, independent of how fast particles move
+    // through it. Slow: the structure should feel like it is breathing.
+    const evolve = rng.range(0.04, 0.11)
+    const lifeSpan = rng.range(3.5, 7.0)
     const phase = [rng.next(), rng.next() + 0.33, rng.next() + 0.67]
 
     function seed() {
@@ -129,8 +193,8 @@ export default {
       for (let i = 0; i < COUNT; i++) {
         data[i * 4 + 0] = rng.range(-1, 1)
         data[i * 4 + 1] = rng.range(-1, 1)
-        data[i * 4 + 2] = rng.range(-0.1, 0.1)
-        data[i * 4 + 3] = rng.range(-0.1, 0.1)
+        data[i * 4 + 2] = rng.next()                 // per-particle phase
+        data[i * 4 + 3] = 0.3 + rng.next() * 1.1     // life, staggered
       }
       return data
     }
@@ -146,61 +210,98 @@ export default {
         COUNT = SIDE * SIDE
         pp = createPingPong(gl, SIDE, SIDE, seed())
         sim = createFullscreenPass(gl, SIM_FRAG)
-
-        // Point-draw program: empty VAO, vertices generated by gl_VertexID,
-        // each fetching its particle's position from the state texture.
+        fade = createFullscreenPass(gl, FADE_FRAG)
         drawProg = buildProgram(gl, DRAW_VERT, DRAW_FRAG)
         vao = gl.createVertexArray()
+        // Uniform locations are fixed for a program's lifetime; looking them up
+        // inside the per-frame draw callback was a string-keyed driver query
+        // every frame for values that never move (issue #115).
+        const uSim = createUniformCache(gl, sim.program)
+        const uFade = createUniformCache(gl, fade.program)
+        const uDraw = createUniformCache(gl, drawProg.program)
 
-        last = 0
-        gl.enable(gl.BLEND)
-        gl.blendFunc(gl.DST_COLOR, gl.ZERO) // multiply (ink on white paper)
+        // HDR accumulation + bloom (issues #112, #113), which the old
+        // multiply-on-white version could not use at all. Threshold sits above
+        // a single particle so only dense braids glow.
+        post = createPostChain(gl, canvas, {
+          bloom: {
+            threshold: 1.0 * luminanceScale(canvas),
+            knee: 0.4,
+            intensity: 0.3,
+            radius: 0.9
+          },
+          tonemap: 'aces',
+          dither: true
+        })
 
-        runtime.start((time) => {
-          const dt = Math.min(time - last, 0.05) || 0.016
-          last = time
+        gl.bindFramebuffer(gl.FRAMEBUFFER, post ? post.sceneTarget.fbo : null)
+        gl.clearColor(0, 0, 0, 1)
+        gl.clear(gl.COLOR_BUFFER_BIT)
+
+        runtime.start((time, frameCount, glCtx, rt) => {
+          const dt = rt.dt
 
           // Sim pass.
           gl.disable(gl.BLEND)
           gl.bindFramebuffer(gl.FRAMEBUFFER, pp.write.fbo)
           gl.viewport(0, 0, SIDE, SIDE)
-          sim.draw((g, p) => {
+          sim.draw((g) => {
             g.activeTexture(g.TEXTURE0)
             g.bindTexture(g.TEXTURE_2D, pp.read.tex)
-            g.uniform1i(g.getUniformLocation(p, 'uState'), 0)
-            g.uniform2f(g.getUniformLocation(p, 'uTexel'), 1 / SIDE, 1 / SIDE)
-            g.uniform1f(g.getUniformLocation(p, 'uTime'), time)
-            g.uniform1f(g.getUniformLocation(p, 'uDt'), dt)
-            g.uniform2f(g.getUniformLocation(p, 'uRadii'), radii[0], radii[1])
-            g.uniform4f(g.getUniformLocation(p, 'uOrbitA'), orbitA[0], orbitA[1], orbitA[2], orbitA[3])
-            g.uniform4f(g.getUniformLocation(p, 'uOrbitB'), orbitB[0], orbitB[1], orbitB[2], orbitB[3])
-            g.uniform2f(g.getUniformLocation(p, 'uForce'), force[0], force[1])
+            g.uniform1i(uSim('uState'), 0)
+            g.uniform2f(uSim('uTexel'), 1 / SIDE, 1 / SIDE)
+            g.uniform1f(uSim('uTime'), time)
+            g.uniform1f(uSim('uDt'), dt)
+            g.uniform2f(uSim('uFieldOffset'), fieldOffset[0], fieldOffset[1])
+            g.uniform1f(uSim('uFieldScale'), fieldScale)
+            g.uniform1f(uSim('uFlowSpeed'), flowSpeed)
+            g.uniform1f(uSim('uEvolve'), evolve)
+            g.uniform1f(uSim('uLifeSpan'), lifeSpan)
           })
           pp.swap()
 
-          // Draw pass: white paper, multiply-blend colored "ink" particles.
-          gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+          // Fade the previous frame, then accumulate particles additively.
+          if (post) {
+            post.resize()
+            gl.bindFramebuffer(gl.FRAMEBUFFER, post.sceneTarget.fbo)
+          } else {
+            gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+          }
           gl.viewport(0, 0, canvas.width, canvas.height)
           gl.enable(gl.BLEND)
-          gl.blendFunc(gl.DST_COLOR, gl.ZERO)
-          gl.clearColor(1, 1, 1, 1)
-          gl.clear(gl.COLOR_BUFFER_BIT)
+          gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA)
+          fade.draw((g) => {
+            g.uniform1f(uFade('uFadeAlpha'),
+              fadeAlphaForHalfLife(dt, TRAIL_HALF_LIFE_S))
+          })
+
+          gl.blendFunc(gl.SRC_ALPHA, gl.ONE)
           gl.useProgram(drawProg.program)
           gl.bindVertexArray(vao)
           gl.activeTexture(gl.TEXTURE0)
           gl.bindTexture(gl.TEXTURE_2D, pp.read.tex)
-          gl.uniform1i(gl.getUniformLocation(drawProg.program, 'uState'), 0)
-          gl.uniform1f(gl.getUniformLocation(drawProg.program, 'uSide'), SIDE)
-          gl.uniform1f(gl.getUniformLocation(drawProg.program, 'uScale'), pointScale(canvas, 1.5))
-          gl.uniform3f(gl.getUniformLocation(drawProg.program, 'uPhase'), phase[0], phase[1], phase[2])
+          gl.uniform1i(uDraw('uState'), 0)
+          gl.uniform1f(uDraw('uSide'), SIDE)
+          gl.uniform1f(uDraw('uScale'), pointScale(canvas, 1.5))
+          gl.uniform1f(uDraw('uFieldScale'), fieldScale)
+          gl.uniform1f(uDraw('uFieldOffsetX'), fieldOffset[0])
+          gl.uniform1f(uDraw('uFieldOffsetY'), fieldOffset[1])
+          gl.uniform1f(uDraw('uTime'), time)
+          gl.uniform1f(uDraw('uEvolve'), evolve)
+          gl.uniform1f(uDraw('uLum'), luminanceScale(canvas))
+          gl.uniform3f(uDraw('uPhase'), phase[0], phase[1], phase[2])
           gl.drawArrays(gl.POINTS, 0, COUNT)
+
+          if (post) post.present()
         })
       },
       stop() {
         if (sim) { sim.destroy(); sim = null }
+        if (fade) { fade.destroy(); fade = null }
         if (drawProg) { drawProg.destroy(); drawProg = null }
         if (vao) { gl.deleteVertexArray(vao); vao = null }
         if (pp) { pp.destroy(); pp = null }
+        if (post) { post.destroy(); post = null }
         if (runtime) { runtime.destroy(); runtime = null }
         gl = null
       }

@@ -12,8 +12,10 @@
  * regions, with varying zoom rate/depth and a rotated warm palette.
  */
 import { createShaderScreensaver } from './gl-base.js'
+import { GLSL } from './glsl-lib.js'
 
-const SHADER = /* glsl */ `
+const SHADER = /* glsl */ `${GLSL.palette}
+
 // Warm "burning" palette. Built from a cosine gradient rather than the
 // monotonic smoothstep ramp this used to use: the input is wrapped with
 // fract(), and a monotonic ramp under fract() has a hard discontinuity at the
@@ -22,7 +24,7 @@ const SHADER = /* glsl */ `
 // wraps seamlessly, and it lets highlights actually reach white.
 vec3 palette(float t, float rot) {
   vec3 phase = vec3(0.0, 0.12, 0.26) + rot;
-  vec3 c = 0.5 + 0.5 * cos(6.2831 * (t + phase));
+  vec3 c = palettePerceptual(t, phase);
   // Weight toward reds/oranges so it still reads as fire rather than rainbow.
   return c * vec3(1.0, 0.72, 0.45) + vec3(0.0, 0.0, 0.05);
 }
@@ -76,4 +78,7 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
 }
 `
 
-export default createShaderScreensaver('Burning Ship', SHADER)
+export default createShaderScreensaver('Burning Ship', SHADER, {
+  antialias: 4,
+  postFX: { bloom: { threshold: 0.26, knee: 0.3, intensity: 0.3, radius: 0.8 } }
+})

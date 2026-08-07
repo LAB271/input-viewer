@@ -11,10 +11,12 @@
  * Julia shape and morphed through the identical sequence.
  */
 import { createShaderScreensaver } from './gl-base.js'
+import { GLSL } from './glsl-lib.js'
 
-const SHADER = /* glsl */ `
+const SHADER = /* glsl */ `${GLSL.palette}
+
 vec3 palette(float t, vec3 phase) {
-  return 0.5 + 0.5 * cos(6.2831 * (t + phase));
+  return palettePerceptual(t, phase);
 }
 
 // Classic c values, each a visually distinct Julia morphology. Curated for the
@@ -68,4 +70,7 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
 }
 `
 
-export default createShaderScreensaver('Julia Set', SHADER)
+export default createShaderScreensaver('Julia Set', SHADER, {
+  antialias: 4,
+  postFX: { bloom: { threshold: 0.32, knee: 0.3, intensity: 0.3, radius: 0.8 } }
+})
