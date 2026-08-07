@@ -2068,5 +2068,6 @@ export {
   setCenterGap,
   setBorderWidth,
   startDetectionLoop,
-  stopDetectionLoop
+  stopDetectionLoop,
+  gpuFeedLayout
 }
