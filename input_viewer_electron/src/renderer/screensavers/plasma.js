@@ -13,7 +13,8 @@
 import { createShaderScreensaver } from './gl-base.js'
 import { GLSL } from './glsl-lib.js'
 
-const SHADER = /* glsl */ `${GLSL.palette}
+const SHADER = /* glsl */ `${GLSL.worldSpace}
+${GLSL.palette}
 
 // Shared gradient noise (issue #115). This saver is the worst case for the
 // value noise it replaces: 6 octaves of fBm meant the lattice grid compounded
@@ -47,7 +48,9 @@ vec3 tintB(float s) {
 }
 
 void mainImage(out vec4 fragColor, in vec2 fragCoord) {
-  vec2 uv = fragCoord / iResolution.xy;
+  // World space: divide by the short axis so the pattern is not stretched 5:1
+  // on the wall (issue #114). The fractals already did this by hand.
+  vec2 uv = worldFromFrag(fragCoord, iResolution.xy);
 
   // Offset into the noise field. This is the part that actually varies the
   // opening frame: iTime starts at 0 on every activation, so without a spatial
@@ -55,7 +58,10 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
   vec2 fieldOffset = vec2(iSeed.x, iSeed.y) * 64.0;
   // Scale varies mildly -- enough to change the sense of scale, not enough to
   // turn the plasma into either flat wash or fine noise.
-  float scale = 2.4 + iSeed.z * 1.4;
+  // Doubled to compensate for the coordinate change: uv used to span [0,1] and
+  // world space spans [-0.5,0.5] vertically, so without this the pattern would
+  // come out twice as coarse as it was tuned to be.
+  float scale = (2.4 + iSeed.z * 1.4) * 2.0;
   vec2 p = uv * scale + fieldOffset;
 
   // Phase offsets so the warp does not start from the same configuration.
