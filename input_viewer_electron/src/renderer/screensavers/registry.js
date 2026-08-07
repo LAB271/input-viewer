@@ -32,6 +32,8 @@ import whiteParticles from './white-particles.js'
 import boids from './boids.js'
 import strangeAttractor from './strange-attractor.js'
 import voronoi from './voronoi.js'
+import metaballs from './metaballs.js'
+import gameOfLife from './game-of-life.js'
 
 export const SCREENSAVERS = [
   dvdLogo,
@@ -46,7 +48,9 @@ export const SCREENSAVERS = [
   whiteParticles,
   boids,
   strangeAttractor,
-  voronoi
+  voronoi,
+  metaballs,
+  gameOfLife
 ]
 
 let canvasEl = null
