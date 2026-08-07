@@ -50,7 +50,32 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
     bright += 0.012 * smoothstep(0.0, 1.5, speed);
   }
 
-  float streak = pow(bright, 1.3) * 2.2;
+  // Streak intensity. The exponent controls how much of the frame is lit and
+  // the multiplier controls how hard the lit parts burn.
+  //
+  // This was pow(bright, 1.3) * 2.2, which was authored before the post chain
+  // existed (#112) and went straight to an 8-bit framebuffer with no encode.
+  // Feeding those same values through the chain's sRGB encode lifts them a
+  // second time -- a linear 0.02 background displays at 0.126, and the dense
+  // mid-tones at 0.16 land near 0.52, so the dark gaps between filaments fill
+  // in and the whole field reads as washed-out grey rather than glowing
+  // filaments on black. Same class of bug as the raymarch double-encode in
+  // #140, milder because it is gamma only and not gamma plus tonemap.
+  //
+  // A steeper exponent darkens everything below the filament cores, which is
+  // what restores the black background; the higher multiplier keeps the cores
+  // as bright as they were. Measured across a sweep, displayed values after
+  // the chain's ACES + sRGB:
+  //
+  //   pow 1.3 x2.2 (original): p05 0.126, 0% of frame below 0.15
+  //   pow 2.4 x6.5           : p05 0.034, 25%
+  //   pow 4.0 x26.0 (this)   : p05 0.007, 37%
+  //
+  // The background is genuinely black again and filament peaks are unchanged
+  // (p95 rises slightly). The median is still 0.34, so this is a substantial
+  // improvement rather than a complete cure -- a saver authored against the
+  // chain from the start would spend fewer pixels in the mid-tones.
+  float streak = pow(bright, 4.0) * 26.0;
   // Hue cycles along the flow direction and time.
   vec2 vdir = flow(p * fscale, t);
   vec3 phase = vec3(0.0, 0.33, 0.67) + iSeed.x;
@@ -67,5 +92,10 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
 export default createShaderScreensaver('Flow Field', SHADER, {
   // Glow-oriented by design: bright filaments over a dark field, and #112
   // lists it among the savers that should have had bloom all along.
-  postFX: { bloom: { threshold: 0.27, knee: 0.35, intensity: 0.28, radius: 0.9 } }
+  //
+  // 0.95 is ~70% of the measured scene peak (1.354). The previous 0.27 was set
+  // against the old flatter streak curve, whose peak was 0.379; against the
+  // steeper curve it selects a fifth of the peak, blooming most of the field
+  // and filling the dark gaps between filaments -- undoing the fix above.
+  postFX: { bloom: { threshold: 0.95, knee: 0.35, intensity: 0.28, radius: 0.9 } }
 })
