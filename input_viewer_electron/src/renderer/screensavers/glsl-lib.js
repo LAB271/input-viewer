@@ -252,7 +252,79 @@ vec2 orientedQuadOffset(vec2 vel, vec2 size, float stretch) {
 }
 `
 
-export const GLSL = { hash, simplex2d, fbm, curl2d, palette, particleFetch, instancedQuad }
+/**
+ * Aspect-correct world space (issue #114).
+ *
+ * Clip space is [-1,1] on both axes but maps to the viewport, so it is only
+ * square when the canvas is. On the 6000x1200 wall it is stretched 5:1, and
+ * every simulation that works directly in clip space is geometrically wrong
+ * there: boids' 0.06 separation radius becomes a 180x36px ellipse, a circular
+ * orbit renders as a 5:1 oval, and a curl-noise field acquires a horizontal
+ * bias nobody designed.
+ *
+ * World space fixes that by dividing both axes by the *short* one, so y runs
+ * [-0.5, 0.5] and x covers [-aspect/2, aspect/2]. One unit is the same distance
+ * in both directions, so a radius means a radius. Only the final conversion to
+ * gl_Position reintroduces the aspect.
+ *
+ * The escape-time fractals and raymarch already did this by hand
+ * ((frag - 0.5*res)/res.y); this makes it the shared default rather than
+ * something each author has to remember.
+ *
+ * Requires a `uAspect` uniform (width / height) for the vertex-side helpers,
+ * or `iResolution` for the fragment-side ones.
+ */
+const worldSpace = /* glsl */`
+// Fragment shaders: pixel coordinate -> world space. Needs iResolution.
+vec2 worldFromFrag(vec2 fragCoord, vec2 resolution) {
+  return (fragCoord - 0.5 * resolution) / resolution.y;
+}
+
+// Vertex shaders: world space -> clip space. Needs the aspect ratio (w/h).
+// Dividing x by aspect is what undoes the viewport stretch.
+vec4 clipFromWorld(vec2 world, float aspect) {
+  return vec4(world.x * 2.0 / aspect, world.y * 2.0, 0.0, 1.0);
+}
+
+// Half-extent of the visible world region, for placing and wrapping things.
+// y is always 0.5; x grows with the aspect ratio.
+vec2 worldExtent(float aspect) {
+  return vec2(0.5 * aspect, 0.5);
+}
+
+// Shortest separation between two points on a torus of the given half-extent.
+//
+// A plain (b - a) is wrong once a simulation wraps: two points either side of
+// the seam are physically adjacent but numerically maximally distant. In boids
+// that made neighbours across the edge read as far away, so the flock visibly
+// tore at screen edges rather than flowing through them.
+vec2 torusDelta(vec2 a, vec2 b, vec2 halfExtent) {
+  vec2 d = b - a;
+  vec2 span = 2.0 * halfExtent;
+  return d - span * floor(d / span + 0.5);
+}
+
+// Wrap a position back into [-halfExtent, halfExtent] on both axes.
+vec2 torusWrap(vec2 p, vec2 halfExtent) {
+  vec2 span = 2.0 * halfExtent;
+  return p - span * floor((p + halfExtent) / span);
+}
+`
+
+export const GLSL = {
+  hash, simplex2d, fbm, curl2d, palette, particleFetch, instancedQuad, worldSpace,
+}
+
+/**
+ * Aspect ratio of a canvas, guarded against a zero-sized one.
+ * @param {HTMLCanvasElement} canvas
+ * @returns {number} width / height
+ */
+export function canvasAspect(canvas) {
+  const w = canvas.width || 1
+  const h = canvas.height || 1
+  return w / h
+}
 
 /**
  * Geometry for instanced-quad particle rendering (issue #116).
