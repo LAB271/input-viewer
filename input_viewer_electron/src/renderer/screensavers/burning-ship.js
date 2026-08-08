@@ -74,11 +74,30 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
     col = palette(t, iSeed.y);
     col *= 0.7 + 0.4 * sin(sn * 0.2);
   }
+
+  // Hand LINEAR light to the post chain.
+  //
+  // Everything above was authored before #112, when this saver rendered
+  // straight to an 8-bit framebuffer with no encode -- so those values are
+  // display-referred (a 0.6 here meant "display at 0.6"). The chain added by
+  // #112 sRGB-ENCODES whatever it receives, which lifted them a second time:
+  // measured displayed p05 was 0.645 with only 1%% of the frame dark, i.e. the
+  // background washed out to grey. Same class of bug as the raymarch
+  // double-encode in #140, gamma-only rather than gamma plus tonemap.
+  //
+  // pow(col, 2.2) inverts the encode the chain will apply, so the round trip
+  // is exact and the pre-#112 look is restored -- while bloom and ACES now
+  // operate on physically-linear values, which is what they expect.
+  col = pow(max(col, 0.0), vec3(2.2));
+
   fragColor = vec4(col, 1.0);
 }
 `
 
 export default createShaderScreensaver('Burning Ship', SHADER, {
   antialias: 4,
-  postFX: { bloom: { threshold: 0.26, knee: 0.3, intensity: 0.3, radius: 0.8 } }
+  // Threshold is ~70%% of the measured scene peak (0.941) now that the
+  // shader hands over linear light. The previous 0.26 was set against the
+  // pre-linearisation output, whose peak was higher.
+  postFX: { bloom: { threshold: 0.66, knee: 0.3, intensity: 0.3, radius: 0.8 } }
 })
