@@ -16,6 +16,9 @@
     <div id="left-feed" class="video-feed">
       <video id="left-video" autoplay playsinline muted></video>
       <div class="no-signal-overlay hidden">
+        <!-- Split-flap board (#92). The text below stays as the fallback for
+             when WebGL2 is unavailable, and is hidden once the board starts. -->
+        <canvas class="no-signal-board"></canvas>
         <div class="no-signal-scanlines"></div>
         <div class="no-signal-content">
           <div class="no-signal-glitch">NO SIGNAL</div>
@@ -37,6 +40,9 @@
     <div id="right-feed" class="video-feed">
       <video id="right-video" autoplay playsinline muted></video>
       <div class="no-signal-overlay hidden">
+        <!-- Split-flap board (#92). The text below stays as the fallback for
+             when WebGL2 is unavailable, and is hidden once the board starts. -->
+        <canvas class="no-signal-board"></canvas>
         <div class="no-signal-scanlines"></div>
         <div class="no-signal-content">
           <div class="no-signal-glitch">NO SIGNAL</div>
