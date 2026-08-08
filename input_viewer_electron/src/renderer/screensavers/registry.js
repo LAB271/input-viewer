@@ -34,6 +34,9 @@ import strangeAttractor from './strange-attractor.js'
 import voronoi from './voronoi.js'
 import metaballs from './metaballs.js'
 import gameOfLife from './game-of-life.js'
+import matrixRain from './matrix-rain.js'
+import starfield from './starfield.js'
+import pong from './pong.js'
 
 export const SCREENSAVERS = [
   dvdLogo,
@@ -50,7 +53,10 @@ export const SCREENSAVERS = [
   strangeAttractor,
   voronoi,
   metaballs,
-  gameOfLife
+  gameOfLife,
+  matrixRain,
+  starfield,
+  pong
 ]
 
 let canvasEl = null
