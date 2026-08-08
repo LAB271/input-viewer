@@ -378,6 +378,7 @@ describe('screensaver module contract', () => {
     // A saver that exists but is not in SCREENSAVERS silently never runs.
     const infra = new Set([
       'gl-base.js', 'glsl-lib.js', 'post-fx.js', 'registry.js', 'seed.js',
+      'glyph-atlas.js',
       'preview.js', 'preview.html',
       'shadercheck.js', 'shadercheck.html'
     ])

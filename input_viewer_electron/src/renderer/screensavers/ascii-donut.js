@@ -23,9 +23,10 @@
 import { createGLRuntime, createFullscreenPass, luminanceScale } from './gl-base.js'
 import { GLSL, createUniformCache } from './glsl-lib.js'
 import { createRng } from './seed.js'
+// Shared with the split-flap board (#92), which #92 asks for explicitly rather
+// than each text saver baking its own atlas.
+import { buildGlyphAtlas, uploadGlyphAtlas, ASCII_RAMP as RAMP } from './glyph-atlas.js'
 
-// The classic donut.c ramp, dimmest to brightest.
-const RAMP = '.,-~:;=!*#$@'
 // Atlas cell size in pixels. 64 is enough that the glyphs stay crisp when the
 // GPU scales them up to wall-sized cells.
 const GLYPH_PX = 64
@@ -33,31 +34,6 @@ const GLYPH_PX = 64
 // terms per issue #88: a glyph that reads on a laptop can be sub-resolvable at
 // 8m, so this scales with the display's short axis rather than being fixed.
 const CELL_PX = 26
-
-/**
- * Rasterise the ramp into a single-row atlas on a detached canvas.
- *
- * Deliberately not the shared screensaver canvas: that one is WebGL2 for its
- * whole life, so a 2D context on it is impossible (#89, same trap as #90).
- */
-function buildAtlas() {
-  const c = document.createElement('canvas')
-  c.width = GLYPH_PX * RAMP.length
-  c.height = GLYPH_PX
-  const ctx = c.getContext('2d')
-  if (!ctx) return null
-  ctx.fillStyle = '#000'
-  ctx.fillRect(0, 0, c.width, c.height)
-  ctx.fillStyle = '#fff'
-  // Monospace so every glyph occupies its cell identically.
-  ctx.font = `${Math.round(GLYPH_PX * 0.82)}px monospace`
-  ctx.textAlign = 'center'
-  ctx.textBaseline = 'middle'
-  for (let i = 0; i < RAMP.length; i++) {
-    ctx.fillText(RAMP[i], (i + 0.5) * GLYPH_PX, GLYPH_PX * 0.54)
-  }
-  return c
-}
 
 const FRAG = /* glsl */ `#version 300 es
 precision highp float;
@@ -195,17 +171,9 @@ export default {
         // Bake the glyph atlas once. If a 2D context is somehow unavailable the
         // saver cannot draw, so fail loudly rather than rendering blank -- the
         // registry catches it and falls back to the DVD logo.
-        const atlas = buildAtlas()
+        const atlas = buildGlyphAtlas(RAMP, { cellPx: GLYPH_PX })
         if (!atlas) throw new Error('ASCII doughnut: no 2D context for the glyph atlas')
-        atlasTex = gl.createTexture()
-        gl.bindTexture(gl.TEXTURE_2D, atlasTex)
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, atlas)
-        // LINEAR so glyph edges stay smooth when scaled up to wall-sized cells;
-        // CLAMP so sampling at a cell edge cannot bleed the neighbouring glyph.
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+        atlasTex = uploadGlyphAtlas(gl, atlas)
 
         runtime.start((time) => {
           const cellPx = CELL_PX * cellScale *

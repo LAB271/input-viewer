@@ -106,6 +106,6 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
 
 // Bloom on the bright interference bands. Threshold from the measured peak,
 // per the HDR-vs-LDR note in post-fx.js.
-export default createShaderScreensaver('Moiré', SHADER, {
+export default createShaderScreensaver('Moire Interference', SHADER, {
   postFX: { bloom: { threshold: 0.4, knee: 0.3, intensity: 0.28, radius: 0.85 } }
 })

@@ -40,6 +40,7 @@ import pong from './pong.js'
 import truchet from './truchet.js'
 import moire from './moire.js'
 import asciiDonut from './ascii-donut.js'
+import splitFlap from './split-flap.js'
 
 export const SCREENSAVERS = [
   dvdLogo,
@@ -62,7 +63,8 @@ export const SCREENSAVERS = [
   pong,
   truchet,
   moire,
-  asciiDonut
+  asciiDonut,
+  splitFlap
 ]
 
 let canvasEl = null
