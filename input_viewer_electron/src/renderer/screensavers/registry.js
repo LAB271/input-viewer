@@ -37,6 +37,9 @@ import gameOfLife from './game-of-life.js'
 import matrixRain from './matrix-rain.js'
 import starfield from './starfield.js'
 import pong from './pong.js'
+import truchet from './truchet.js'
+import moire from './moire.js'
+import asciiDonut from './ascii-donut.js'
 
 export const SCREENSAVERS = [
   dvdLogo,
@@ -56,7 +59,10 @@ export const SCREENSAVERS = [
   gameOfLife,
   matrixRain,
   starfield,
-  pong
+  pong,
+  truchet,
+  moire,
+  asciiDonut
 ]
 
 let canvasEl = null
