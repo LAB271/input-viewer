@@ -45,6 +45,7 @@ import waveTank from './wave-tank.js'
 import fallingSand from './falling-sand.js'
 import frost from './frost.js'
 import treeGrowth from './tree-growth.js'
+import aquarium from './aquarium.js'
 
 export const SCREENSAVERS = [
   dvdLogo,
@@ -72,7 +73,8 @@ export const SCREENSAVERS = [
   waveTank,
   fallingSand,
   frost,
-  treeGrowth
+  treeGrowth,
+  aquarium
 ]
 
 let canvasEl = null
