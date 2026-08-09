@@ -44,6 +44,7 @@ import doublePendulum from './double-pendulum.js'
 import waveTank from './wave-tank.js'
 import fallingSand from './falling-sand.js'
 import frost from './frost.js'
+import treeGrowth from './tree-growth.js'
 
 export const SCREENSAVERS = [
   dvdLogo,
@@ -70,7 +71,8 @@ export const SCREENSAVERS = [
   doublePendulum,
   waveTank,
   fallingSand,
-  frost
+  frost,
+  treeGrowth
 ]
 
 let canvasEl = null
