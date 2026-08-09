@@ -12,7 +12,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import {
   checkNoSignalFromSource, saveReferenceScreenshot, clearReferenceScreenshot,
-  compareFrames, CONFIG,
+  replaceReferenceScreenshots, compareFrames, CONFIG,
 } from '../src/renderer/detection-simple.js'
 
 /** ImageData-shaped frame filled with one colour. */
@@ -143,22 +143,50 @@ describe('reference resampling', () => {
     expect(await checkNoSignalFromSource(DEVICE, structured)).toBe(true)
   })
 
-  it('picks up a re-captured reference of the same dimensions', async () => {
-    // Guards the cache-invalidation bug: a same-size re-capture must not keep
+  it('picks up a replaced reference of the same dimensions', async () => {
+    // Guards the cache-invalidation bug: a same-size replacement must not keep
     // comparing against the old reference's pixels.
+    //
+    // Uses replaceReferenceScreenshots, not saveReferenceScreenshot: since
+    // #161 saving APPENDS, because one card has several no-signal screens.
+    // Replacement is still what "reset this input" means, and it is the
+    // operation whose cache invalidation this test exists to pin.
     saveReferenceScreenshot(DEVICE, solid(1920, 1080, [12, 12, 12]))
     const dark = sourceOf(solid(480, 270, [12, 12, 12]))
     await checkNoSignalFromSource(DEVICE, dark)
     expect(await checkNoSignalFromSource(DEVICE, dark)).toBe(true)
 
-    // Re-capture with a different picture at the same dimensions. The same
-    // dark frame must now stop matching -- if the stale downscale were reused
-    // it would keep matching forever and the overlay would never clear.
-    saveReferenceScreenshot(DEVICE, solid(1920, 1080, [200, 200, 200]))
+    replaceReferenceScreenshots(DEVICE, solid(1920, 1080, [200, 200, 200]))
     const stillDark = sourceOf(solid(480, 270, [12, 12, 12]))
     // No-signal is latched, so it takes two mismatches to clear (by design).
     expect(await checkNoSignalFromSource(DEVICE, stillDark)).toBe(true)
     expect(await checkNoSignalFromSource(DEVICE, stillDark)).toBe(false)
+  })
+
+  it('matches any one of several captured references', async () => {
+    // The point of #161: a capture card has more than one no-signal screen.
+    saveReferenceScreenshot(DEVICE, solid(1920, 1080, [12, 12, 12]))     // black
+    saveReferenceScreenshot(DEVICE, solid(1920, 1080, [20, 40, 160]))    // blue
+
+    const blue = sourceOf(solid(480, 270, [20, 40, 160]))
+    await checkNoSignalFromSource(DEVICE, blue)
+    expect(await checkNoSignalFromSource(DEVICE, blue)).toBe(true)
+
+    clearReferenceScreenshot(DEVICE)
+    saveReferenceScreenshot(DEVICE, solid(1920, 1080, [12, 12, 12]))
+    saveReferenceScreenshot(DEVICE, solid(1920, 1080, [20, 40, 160]))
+    const black = sourceOf(solid(480, 270, [12, 12, 12]))
+    await checkNoSignalFromSource(DEVICE, black)
+    expect(await checkNoSignalFromSource(DEVICE, black)).toBe(true)
+  })
+
+  it('still reports signal when a frame matches none of the references', async () => {
+    saveReferenceScreenshot(DEVICE, solid(1920, 1080, [12, 12, 12]))
+    saveReferenceScreenshot(DEVICE, solid(1920, 1080, [20, 40, 160]))
+    // A green frame is neither of them.
+    const green = sourceOf(solid(480, 270, [20, 200, 60]))
+    expect(await checkNoSignalFromSource(DEVICE, green)).toBe(false)
+    expect(await checkNoSignalFromSource(DEVICE, green)).toBe(false)
   })
 
   it('handles a reference smaller than the read size', async () => {

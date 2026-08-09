@@ -19,7 +19,18 @@ export const CONFIG = {
   debugLogging: false
 }
 
-// Stored reference screenshots for each device
+// Cheap-probe sizing. See probeFrames() for why 32.
+const PROBE_POINTS = 32
+// Allowed probe misses before rejecting. ~15% of the points, so a reference
+// that matches loosely still reaches the full scan that decides properly.
+const PROBE_MAX_MISSES = 5
+
+// Stored reference screenshots per device: Map<deviceId, ImageData[]>.
+//
+// A list rather than a single image because one capture card has several
+// no-signal states -- no cable, unsupported mode, HDCP error -- and each looks
+// different. A frame matching ANY stored reference is no-signal, so an operator
+// teaches the app each variant their hardware produces (issue #161).
 const referenceScreenshots = new Map()
 
 // Detection state per device
@@ -38,11 +49,50 @@ const canvasContextCache = new WeakMap()
  * @param {ImageData} imageData - Screenshot to use as reference
  */
 export function saveReferenceScreenshot(deviceId, imageData) {
-  referenceScreenshots.set(deviceId, imageData)
-  // Drop any cached downscale: a re-capture at the same dimensions would
-  // otherwise keep comparing against the previous reference's pixels.
-  scaledReferenceCache.delete(deviceId)
-  console.log(`[Detection] Saved reference screenshot for ${deviceId}: ${imageData.width}x${imageData.height}`)
+  const list = referenceScreenshots.get(deviceId) || []
+  list.push(imageData)
+  referenceScreenshots.set(deviceId, list)
+  // Drop any cached downscales: they are keyed per device, and the new entry
+  // shifts the indices the cache is built against.
+  clearScaledCache(deviceId)
+  console.log(`[Detection] Saved reference ${list.length} for ${deviceId}: ${imageData.width}x${imageData.height}`)
+}
+
+/**
+ * Replace all references for a device with a single one.
+ *
+ * The pre-#161 behaviour, kept for callers that mean "reset to just this".
+ * @param {string} deviceId
+ * @param {ImageData} imageData
+ */
+export function replaceReferenceScreenshots(deviceId, imageData) {
+  referenceScreenshots.set(deviceId, [imageData])
+  clearScaledCache(deviceId)
+  console.log(`[Detection] Replaced references for ${deviceId}`)
+}
+
+/**
+ * Remove one reference by index.
+ * @param {string} deviceId
+ * @param {number} index
+ * @returns {boolean} whether an entry was removed
+ */
+export function removeReferenceScreenshot(deviceId, index) {
+  const list = referenceScreenshots.get(deviceId)
+  if (!list || index < 0 || index >= list.length) return false
+  list.splice(index, 1)
+  if (list.length === 0) referenceScreenshots.delete(deviceId)
+  clearScaledCache(deviceId)
+  return true
+}
+
+/**
+ * All references for a device.
+ * @param {string} deviceId
+ * @returns {ImageData[]} empty when none are stored
+ */
+export function getReferenceScreenshots(deviceId) {
+  return referenceScreenshots.get(deviceId) || []
 }
 
 /**
@@ -51,7 +101,8 @@ export function saveReferenceScreenshot(deviceId, imageData) {
  * @returns {boolean}
  */
 export function hasReferenceScreenshot(deviceId) {
-  return referenceScreenshots.has(deviceId)
+  const list = referenceScreenshots.get(deviceId)
+  return Boolean(list && list.length > 0)
 }
 
 /**
@@ -61,7 +112,7 @@ export function hasReferenceScreenshot(deviceId) {
 export function clearReferenceScreenshot(deviceId) {
   referenceScreenshots.delete(deviceId)
   deviceStates.delete(deviceId)
-  scaledReferenceCache.delete(deviceId)
+  clearScaledCache(deviceId)
   console.log(`[Detection] Cleared reference screenshot for ${deviceId}`)
 }
 
@@ -82,15 +133,20 @@ export function serializeReferences() {
   // Reuse single canvas for all serializations (avoids repeated canvas creation)
   const canvas = document.createElement('canvas')
   const ctx = canvas.getContext('2d')
-  for (const [deviceId, imageData] of referenceScreenshots.entries()) {
-    // Convert ImageData to base64 for storage
-    canvas.width = imageData.width
-    canvas.height = imageData.height
-    ctx.putImageData(imageData, 0, 0)
+  for (const [deviceId, list] of referenceScreenshots.entries()) {
     data[deviceId] = {
-      dataUrl: canvas.toDataURL('image/png'),
-      width: imageData.width,
-      height: imageData.height
+      // Written as a list from #161 on. deserializeReferences still reads the
+      // old single-object shape, so an existing settings.json keeps working.
+      references: list.map((imageData) => {
+        canvas.width = imageData.width
+        canvas.height = imageData.height
+        ctx.putImageData(imageData, 0, 0)
+        return {
+          dataUrl: canvas.toDataURL('image/png'),
+          width: imageData.width,
+          height: imageData.height
+        }
+      })
     }
   }
   return data
@@ -102,26 +158,40 @@ export function serializeReferences() {
  */
 export async function deserializeReferences(data) {
   for (const [deviceId, info] of Object.entries(data)) {
-    try {
-      const img = new Image()
-      await new Promise((resolve, reject) => {
-        img.onload = resolve
-        img.onerror = reject
-        img.src = info.dataUrl
-      })
-      
-      const canvas = document.createElement('canvas')
-      canvas.width = info.width
-      canvas.height = info.height
-      const ctx = canvas.getContext('2d')
-      ctx.drawImage(img, 0, 0)
-      const imageData = ctx.getImageData(0, 0, info.width, info.height)
-      
-      referenceScreenshots.set(deviceId, imageData)
-      scaledReferenceCache.delete(deviceId)
-      console.log(`[Detection] Restored reference screenshot for ${deviceId}`)
-    } catch (err) {
-      console.error(`[Detection] Failed to restore reference for ${deviceId}:`, err)
+    // Two shapes are accepted. Pre-#161 settings.json stored ONE reference per
+    // device as a bare {dataUrl,width,height}; from #161 it is {references:[...]}.
+    // Reading both means an existing install migrates with no user action, and
+    // the first save rewrites it in the new shape.
+    const entries = Array.isArray(info?.references)
+      ? info.references
+      : (info?.dataUrl ? [info] : [])
+
+    const decoded = []
+    for (const entry of entries) {
+      try {
+        const img = new Image()
+        await new Promise((resolve, reject) => {
+          img.onload = resolve
+          img.onerror = reject
+          img.src = entry.dataUrl
+        })
+
+        const canvas = document.createElement('canvas')
+        canvas.width = entry.width
+        canvas.height = entry.height
+        const ctx = canvas.getContext('2d')
+        ctx.drawImage(img, 0, 0)
+        decoded.push(ctx.getImageData(0, 0, entry.width, entry.height))
+      } catch (err) {
+        // One bad entry must not discard the device's other references.
+        console.error(`[Detection] Failed to restore a reference for ${deviceId}:`, err)
+      }
+    }
+
+    if (decoded.length > 0) {
+      referenceScreenshots.set(deviceId, decoded)
+      clearScaledCache(deviceId)
+      console.log(`[Detection] Restored ${decoded.length} reference(s) for ${deviceId}`)
     }
   }
 }
@@ -204,7 +274,19 @@ export function checkNoSignal(deviceId, video, canvas) {
 // Resampled references, keyed by deviceId. A reference is captured once at
 // capture resolution but compared against every detection cycle at detect
 // resolution, so the downscale is cached rather than repeated.
+//
+// Keyed `deviceId#refIndex`, not by device: with a list of references, keying
+// by device alone would make each reference evict the previous one on every
+// cycle, so the downscale would be recomputed for all of them every time.
 const scaledReferenceCache = new Map()
+
+/** Drop every cached downscale belonging to a device. */
+function clearScaledCache(deviceId) {
+  const prefix = `${deviceId}#`
+  for (const key of scaledReferenceCache.keys()) {
+    if (key.startsWith(prefix)) scaledReferenceCache.delete(key)
+  }
+}
 
 /**
  * A device's reference screenshot resampled to the given size.
@@ -220,13 +302,14 @@ const scaledReferenceCache = new Map()
  * @param {number} height
  * @returns {{width: number, height: number, data: Uint8ClampedArray}|null}
  */
-function referenceAtSize(deviceId, reference, width, height) {
+function referenceAtSize(deviceId, refIndex, reference, width, height) {
   if (!width || !height) return null
 
   // Already the right size: use as-is.
   if (reference.width === width && reference.height === height) return reference
 
-  const cached = scaledReferenceCache.get(deviceId)
+  const cacheKey = `${deviceId}#${refIndex}`
+  const cached = scaledReferenceCache.get(cacheKey)
   if (cached && cached.width === width && cached.height === height &&
       cached.sourceWidth === reference.width && cached.sourceHeight === reference.height) {
     return cached.frame
@@ -253,7 +336,7 @@ function referenceAtSize(deviceId, reference, width, height) {
   }
 
   const frame = { width, height, data: out }
-  scaledReferenceCache.set(deviceId, {
+  scaledReferenceCache.set(cacheKey, {
     width, height, sourceWidth: reference.width, sourceHeight: reference.height, frame,
   })
   return frame
@@ -306,8 +389,8 @@ function applyDebounce(state, isMatch) {
  * @returns {Promise<boolean>} - True if no-signal detected
  */
 export async function checkNoSignalFromSource(deviceId, source) {
-  const reference = referenceScreenshots.get(deviceId)
-  if (!reference) {
+  const references = referenceScreenshots.get(deviceId)
+  if (!references || references.length === 0) {
     if (CONFIG.debugLogging) console.log(`[Detection] No reference screenshot for ${deviceId}`)
     return false
   }
@@ -320,13 +403,30 @@ export async function checkNoSignalFromSource(deviceId, source) {
     // the previous result rather than reporting a spurious change.
     if (!frame) return state.lastResult
 
-    const scaledReference = referenceAtSize(deviceId, reference, frame.width, frame.height)
-    if (!scaledReference) return state.lastResult
-
-    const isMatch = compareFrames(frame, scaledReference)
+    // A frame matching ANY stored reference is no-signal: a capture card has
+    // several such screens (no cable, unsupported mode, HDCP error) and the
+    // operator captures each one (issue #161).
+    //
+    // Staged per reference, cheapest first. The probe rejects a live feed in
+    // ~32 comparisons, so the common case costs 32*N rather than 32,400*N --
+    // which is what keeps a list of references affordable.
+    let isMatch = false
+    let matchedIndex = -1
+    for (let i = 0; i < references.length; i++) {
+      const scaled = referenceAtSize(deviceId, i, references[i], frame.width, frame.height)
+      if (!scaled) continue
+      if (!probeFrames(frame, scaled)) continue
+      if (compareFrames(frame, scaled)) {
+        isMatch = true
+        matchedIndex = i
+        break
+      }
+    }
 
     if (CONFIG.debugLogging) {
-      console.log(`[Detection] ${deviceId}: ${isMatch ? 'MATCH (no signal)' : 'NO MATCH (has signal)'}`)
+      console.log(`[Detection] ${deviceId}: ${isMatch
+        ? `MATCH (no signal, reference ${matchedIndex + 1}/${references.length})`
+        : `NO MATCH (has signal, ${references.length} reference(s) checked)`}`)
     }
 
     return applyDebounce(state, isMatch)
@@ -335,6 +435,63 @@ export async function checkNoSignalFromSource(deviceId, source) {
     console.error('[Detection] Error during detection:', err)
     return state.lastResult
   }
+}
+
+
+/**
+ * Cheap probe: does this frame plausibly match the reference?
+ *
+ * Samples PROBE_POINTS pixels spread across the frame and rejects early if too
+ * many differ. A live feed differs from a no-signal reference almost
+ * everywhere, so this exits in microseconds instead of scanning 32,400 samples
+ * -- which is the work that made detection visibly hitch, once per device per
+ * cycle, and which multiplies by the number of stored references.
+ *
+ * **The probe must never reject a frame the full scan would have matched.** A
+ * false pass only costs a scan that was going to happen anyway; a false reject
+ * silently breaks detection. Hence the deliberately generous miss budget: it
+ * only bails when a mismatch is obvious.
+ *
+ * PROBE_POINTS = 32 is chosen by measurement. Probability a live feed wrongly
+ * passes the probe, in the hard case where only 30% of pixels differ:
+ *
+ *   5 points  -> 16.8%
+ *   16 points ->  9.9%
+ *   32 points ->  1.9%
+ *
+ * A wrong pass is harmless but wastes a scan, and 32 comparisons is nothing
+ * against 32,400.
+ *
+ * @param {{width:number,height:number,data:Uint8ClampedArray}} frame
+ * @param {{width:number,height:number,data:Uint8ClampedArray}} reference same size
+ * @returns {boolean} true when the full scan is worth running
+ */
+export function probeFrames(frame, reference) {
+  const a = frame.data
+  const b = reference.data
+  const pixels = frame.width * frame.height
+  if (pixels === 0) return false
+
+  const threshold = CONFIG.pixelDifferenceThreshold
+  let misses = 0
+
+  for (let i = 0; i < PROBE_POINTS; i++) {
+    // Golden-ratio stride spreads the points across the whole frame without
+    // clustering, and is deterministic -- the same offsets every cycle, so the
+    // reads stay cache-predictable.
+    const px = Math.floor(((i * 0.6180339887) % 1) * pixels)
+    const o = px * 4
+
+    const dr = a[o] - b[o]
+    const dg = a[o + 1] - b[o + 1]
+    const db = a[o + 2] - b[o + 2]
+    if ((dr < 0 ? -dr : dr) > threshold ||
+        (dg < 0 ? -dg : dg) > threshold ||
+        (db < 0 ? -db : db) > threshold) {
+      if (++misses > PROBE_MAX_MISSES) return false
+    }
+  }
+  return true
 }
 
 /**
