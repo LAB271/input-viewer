@@ -49,6 +49,8 @@ export const DETECT_HEIGHT = 270
  * detection always sees current state, which is what it wants.
  */
 export function createWebCodecsFrameSource(track) {
+  // Reused across read() calls; see the note in read().
+  let readBuffer = null
   if (!supportsWebCodecsFrames()) {
     throw new Error('WebCodecs frame reading is not available')
   }
@@ -98,9 +100,18 @@ export function createWebCodecsFrameSource(track) {
 
       const rect = { x: 0, y: 0, width: w, height: h }
       const size = frame.allocationSize({ rect, format: 'RGBA' })
-      const buf = new Uint8ClampedArray(size)
-      await frame.copyTo(buf, { rect, format: 'RGBA' })
-      return { width: w, height: h, data: buf }
+      // Reuse the buffer across cycles. A fresh Uint8ClampedArray here is
+      // ~518KB at the detect size, allocated once per device per detection
+      // cycle -- steady GC pressure on the main thread for a buffer whose
+      // contents are consumed immediately and never retained.
+      if (!readBuffer || readBuffer.length < size) {
+        readBuffer = new Uint8ClampedArray(size)
+      }
+      await frame.copyTo(readBuffer, { rect, format: 'RGBA' })
+      // The consumer reads synchronously before the next cycle overwrites this,
+      // which holds because detection awaits each read in turn and the loop
+      // guards against overlapping cycles.
+      return { width: w, height: h, data: readBuffer }
     },
 
     close() {
