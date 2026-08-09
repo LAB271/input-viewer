@@ -173,7 +173,7 @@ export default {
         // registry catches it and falls back to the DVD logo.
         const atlas = buildGlyphAtlas(RAMP, { cellPx: GLYPH_PX })
         if (!atlas) throw new Error('ASCII doughnut: no 2D context for the glyph atlas')
-        atlasTex = uploadGlyphAtlas(gl, atlas)
+        atlasTex = uploadGlyphAtlas(gl, atlas, RAMP)
 
         runtime.start((time) => {
           const cellPx = CELL_PX * cellScale *

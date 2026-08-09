@@ -58,7 +58,7 @@ const FRAG = /* glsl */ `#version 300 es
 precision highp float;
 uniform vec2 uResolution;
 uniform sampler2D uAtlas;
-uniform sampler2D uState;    // r = current glyph index, g = flap phase 0..1
+uniform sampler2D uState;    // r = glyph index, g = flap phase, b = previous glyph
 uniform vec2 uGrid;          // cols, rows
 uniform vec2 uTileBox;       // tile size in pixels, including the gap
 uniform vec2 uOrigin;        // pixel offset of the grid's bottom-left
@@ -77,6 +77,8 @@ const vec3 INK        = vec3(0.98, 0.90, 0.68);  // warm cream, slightly amber
 const vec3 TILE_UPPER = vec3(0.085, 0.082, 0.078);
 const vec3 TILE_LOWER = vec3(0.055, 0.053, 0.050);
 const vec3 SURROUND   = vec3(0.016, 0.016, 0.018);
+// How far up the lower half the falling flap's shadow reaches.
+const float SHADOW_REACH = 0.45;
 
 void main() {
   vec2 rel = gl_FragCoord.xy - uOrigin;
@@ -106,32 +108,72 @@ void main() {
   vec4 st = texture(uState, stateUv);
   float glyphIndex = floor(st.r + 0.5);
   float phase = st.g;
+  float prevGlyphIndex = floor(st.b + 0.5);
 
-  // Tile body: two-tone, darker in the lower half, with a split line across the
-  // middle. Without these it reads as flat text rather than a mechanical board.
-  float lower = step(face.y, 0.5);
-  vec3 body = lower > 0.5 ? TILE_LOWER : TILE_UPPER;
-  // The split line itself.
+  // A real split-flap tile is two independent halves. The bottom half already
+  // shows the NEXT character; the top half of the OLD character falls forward
+  // across it, and once it passes horizontal you see the back of the flap.
+  //
+  // The previous version squashed the whole glyph with abs(cos(phase)) instead.
+  // That was wrong twice over. Mechanically the tile never split, so it read as
+  // a character being stretched rather than a flap turning. And numerically it
+  // sampled the atlas over a span of up to 6.4x at mid-flap -- a 64px atlas row
+  // mapping to ~6px on screen -- which aliased against the pixel grid and threw
+  // moving horizontal bands across the glyphs.
+  bool topHalf = face.y > 0.5;
+
+  // Which character each half shows. The bottom half flips to the new one
+  // immediately; the top half keeps the old one until it passes horizontal.
+  float halfGlyph = topHalf
+    ? (phase < 0.5 ? prevGlyphIndex : glyphIndex)
+    : glyphIndex;
+
+  // Fold of the falling top half: 1 at rest, 0 edge-on, then it has passed.
+  float fold = phase < 0.5 ? cos(phase * 3.14159265) : 1.0;
+  float foldAbs = fold < 0.0 ? -fold : fold;
+
+  // Body shading. The falling half darkens as it turns away from the light,
+  // which is most of what sells the movement.
+  vec3 body = topHalf ? TILE_UPPER : TILE_LOWER;
+  if (topHalf && phase > 0.0 && phase < 1.0) {
+    body *= 0.45 + 0.55 * foldAbs;
+  }
+
+  // Split line across the middle, and a soft shadow the falling half casts on
+  // the bottom half as it comes down.
   float split = 1.0 - smoothstep(0.0, 0.012, abs(face.y - 0.5));
-  body = mix(body, body * 0.35, split);
-
-  // Squash the glyph vertically mid-flap to fake the rotation. This is the
-  // detail that sells the mechanism: abs(cos()) goes to zero at the halfway
-  // point, so the character appears edge-on.
-  float squash = abs(cos(phase * 3.14159265));
-  // Guard the divide: at squash 0 the glyph is edge-on and invisible anyway.
-  float gy = squash > 0.02 ? (face.y - 0.5) / squash + 0.5 : -1.0;
+  body = mix(body, body * 0.3, split);
+  if (!topHalf && phase > 0.0 && phase < 0.5) {
+    float shadow = (1.0 - foldAbs) * smoothstep(0.5, 0.5 - SHADOW_REACH, face.y);
+    body *= 1.0 - 0.5 * shadow;
+  }
 
   vec3 col = body;
+
+  // Glyph lookup. The key difference from the old version: the vertical
+  // mapping is NOT divided by the fold, so the atlas is always sampled at
+  // roughly 1:1 and cannot alias. The fold is expressed by moving the
+  // half's pivot instead, which is also what a real flap does.
+  float gy = face.y;
+  if (topHalf && phase < 0.5) {
+    // The falling half pivots on the centre line, so its visible height
+    // shrinks toward the pivot rather than the glyph being scaled in place.
+    gy = 0.5 + (face.y - 0.5) / max(foldAbs, 0.25);
+  }
+
   if (gy >= 0.0 && gy <= 1.0) {
     // Inset the glyph within the tile face so characters do not touch the edges.
     vec2 g = vec2((face.x - 0.5) / 0.78 + 0.5, (gy - 0.5) / 0.82 + 0.5);
     if (g.x >= 0.0 && g.x <= 1.0 && g.y >= 0.0 && g.y <= 1.0) {
-      vec2 atlasUv = vec2((glyphIndex + g.x) / uCharCount, 1.0 - g.y);
+      vec2 atlasUv = vec2((halfGlyph + g.x) / uCharCount, 1.0 - g.y);
       float ink = texture(uAtlas, atlasUv).r;
       // Cream on dark, the classic board colouring. #92 expects this to survive
       // ambient-light washout better than the dim particle savers (#88).
-      col = mix(col, INK, ink);
+      vec3 inkCol = INK;
+      // The falling half's ink darkens with its body, or the glyph would float
+      // brightly on a shaded flap.
+      if (topHalf && phase > 0.0 && phase < 1.0) inkCol *= 0.45 + 0.55 * foldAbs;
+      col = mix(col, inkCol, ink);
     }
   }
 
@@ -251,6 +293,7 @@ export default {
           for (let i = 0; i < count; i++) {
             current[i * 4] = rng.int(0, FLAP_CHARS.length - 1)
             current[i * 4 + 1] = 0
+            current[i * 4 + 2] = current[i * 4]
             current[i * 4 + 3] = 1
           }
           setMessage(messageIndex)
@@ -263,7 +306,7 @@ export default {
 
         const atlas = buildGlyphAtlas(FLAP_CHARS, { cellPx: GLYPH_PX })
         if (!atlas) throw new Error('Split flap: no 2D context for the glyph atlas')
-        atlasTex = uploadGlyphAtlas(gl, atlas)
+        atlasTex = uploadGlyphAtlas(gl, atlas, FLAP_CHARS)
 
         stateTex = gl.createTexture()
         gl.bindTexture(gl.TEXTURE_2D, stateTex)
@@ -310,13 +353,19 @@ export default {
             let glyph = idx
             while (phase >= 1.0) {
               phase -= 1.0
-              // Step forward through the ramp only, like a real board.
+              // Step forward through the ramp only, like a real board. The
+              // character being replaced is kept in the blue channel: the
+              // falling top half of the flap still shows it until it passes
+              // horizontal, which is what makes the flip read mechanically.
+              current[i * 4 + 2] = Math.round(glyph)
               glyph = (Math.round(glyph) + 1) % FLAP_CHARS.length
             }
             if (Math.round(glyph) === want) {
-              // Landed: stop mid-flap motion so the tile sits flat.
+              // Landed: stop mid-flap motion so the tile sits flat, and clear
+              // the outgoing glyph so a settled tile shows one character.
               current[i * 4] = want
               current[i * 4 + 1] = 0
+              current[i * 4 + 2] = want
             } else {
               current[i * 4] = glyph
               current[i * 4 + 1] = phase

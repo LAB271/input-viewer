@@ -72,14 +72,36 @@ export function buildGlyphAtlas(chars, options = {}) {
  *
  * @param {WebGL2RenderingContext} gl
  * @param {HTMLCanvasElement} atlas
+ * @param {string} chars the set baked into the atlas, used to size a mip cap
  * @returns {WebGLTexture}
  */
-export function uploadGlyphAtlas(gl, atlas) {
+export function uploadGlyphAtlas(gl, atlas, chars) {
   const tex = gl.createTexture()
   gl.bindTexture(gl.TEXTURE_2D, tex)
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, atlas)
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
+  // Mipmaps, and a mip-aware minification filter.
+  //
+  // A glyph is minified whenever a tile is smaller than the 64px atlas cell,
+  // and during a flap the falling half compresses it further still. Sampling a
+  // 64px row into a handful of screen pixels with plain LINEAR aliases badly:
+  // the strokes beat against the pixel grid and throw moving horizontal bands
+  // across the board. LINEAR_MIPMAP_LINEAR picks an appropriate mip instead.
+  gl.generateMipmap(gl.TEXTURE_2D)
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR)
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
+
+  // Cap the mip level so glyphs cannot bleed into each other.
+  //
+  // The atlas is one row of cells, so each mip halves the cell width as well
+  // as its height. Below about 4px per cell, adjacent characters merge and a
+  // tile shows a smear of two glyphs. Allowing mips down to 1x1 would trade
+  // the aliasing bands for that, which is no better.
+  const cellPxAtMip = (level) => (atlas.width >> level) / chars.length
+  let maxLevel = 0
+  while (cellPxAtMip(maxLevel + 1) >= 4 && (atlas.height >> (maxLevel + 1)) >= 1) {
+    maxLevel++
+  }
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAX_LEVEL, maxLevel)
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
   return tex
