@@ -448,25 +448,45 @@ async function startVideoStream(deviceId, videoElement, side) {
       return null
     }
     
-    // Request highest resolution the device supports, with audio
+    // Pair audio by groupId, not by reusing the video deviceId (#151).
+    //
+    // A videoinput id is never a valid audioinput id, so `audio: {deviceId:
+    // {exact: videoDeviceId}}` rejected with OverconstrainedError for every
+    // device without a coincidentally-matching audio id -- virtual cameras,
+    // most webcams, many capture cards. Every one of those paid two
+    // getUserMedia calls on each input switch and logged a misleading "audio
+    // not available", which carried no information because it fired constantly.
+    //
+    // enumerateDevices reports groupId for exactly this: devices belonging to
+    // the same physical unit share one.
+    const videoDevice = state.devices.find((d) => d.deviceId === deviceId)
+    let audioDevice = null
+    if (videoDevice?.groupId) {
+      const all = await navigator.mediaDevices.enumerateDevices()
+      audioDevice = all.find(
+        (d) => d.kind === 'audioinput' && d.groupId === videoDevice.groupId) || null
+    }
+
+    const videoConstraints = {
+      deviceId: { exact: deviceId },
+      width: { ideal: 4096 },
+      height: { ideal: 2160 },
+      frameRate: { ideal: 60 }
+    }
     const constraints = {
-      video: {
-        deviceId: { exact: deviceId },
-        width: { ideal: 4096 },
-        height: { ideal: 2160 },
-        frameRate: { ideal: 60 }
-      },
-      audio: {
-        deviceId: { exact: deviceId }
-      }
+      video: videoConstraints,
+      // Only ask for audio when a matching device actually exists, so the
+      // common path is a single call.
+      ...(audioDevice ? { audio: { deviceId: { exact: audioDevice.deviceId } } } : {})
     }
 
     let stream
     try {
       stream = await navigator.mediaDevices.getUserMedia(constraints)
     } catch {
-      // If audio fails (device doesn't support audio), try video only
-      console.log(`[Video] Audio not available for device, falling back to video only`)
+      // Audio was expected but could not be opened -- the device may have been
+      // claimed by another application. Video alone is still worth having.
+      console.log(`[Video] Audio unavailable for ${side}, falling back to video only`)
       const videoOnlyConstraints = {
         video: {
           deviceId: { exact: deviceId },
@@ -1536,6 +1556,22 @@ function handleKeyDown(event) {
     case 'q':
       window.electronAPI.quitApp()
       break
+    case 'd':
+      // Documented in the README since before the keyboard handler existed,
+      // but never wired up (#157): layout was switchable from the dropdown
+      // only, so a documented key silently did nothing. The booth is operated
+      // by keyboard, often by someone following a printed shortcut list, where
+      // that reads as the app being broken rather than the docs being wrong.
+      event.preventDefault()
+      setLayout('dual')
+      break
+    case 's':
+      // Single view shows the left feed. That is always the selected input:
+      // the number keys call selectInput() with the default side='both', so
+      // both feeds carry the same device and there is no "wrong side" to show.
+      event.preventDefault()
+      setLayout('single')
+      break
     case 'v':
       // Toggle the screensaver on demand. Not 'S': that is documented in the
       // README as single-view layout, and taking it would either break a
@@ -2404,6 +2440,11 @@ export {
   state,
   elements,
   setLayout,
+  // Exported so the key bindings themselves are testable. D and S were
+  // documented in the README for a long time while never being wired to this
+  // handler (#157) -- setLayout was covered by tests, but nothing asserted
+  // that a keypress reached it.
+  handleKeyDown,
   selectInput,
   toggleFreeze,
   getInputName,
