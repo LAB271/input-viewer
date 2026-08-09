@@ -182,3 +182,22 @@ export function stopScreensaver() {
 export function isScreensaverRunning() {
   return running
 }
+
+/**
+ * Index of the running screensaver, or -1 when none is running.
+ *
+ * Exported so a caller can step relative to the current pick rather than
+ * tracking its own copy of the index -- a duplicate would drift the moment the
+ * rotation timer or the start-failure fallback changed the selection without
+ * telling the caller.
+ *
+ * @returns {number}
+ */
+export function getActiveIndex() {
+  return activeIndex
+}
+
+/** @returns {number} how many screensavers are registered */
+export function screensaverCount() {
+  return SCREENSAVERS.length
+}
