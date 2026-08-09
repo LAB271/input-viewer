@@ -12,6 +12,7 @@ import {
   getReferenceScreenshots,
   referenceAtSize,
   matchRatio,
+  setDiagnosticSink,
   probeFrames,
   CONFIG,
   setDebugLogging,
@@ -1975,6 +1976,10 @@ async function detectionSnapshot() {
 function detectionDebug() {
   return globalThis.__INPUT_VIEWER_DETECT_DEBUG__ === true
 }
+// Tracing is currently unconditional while this is being diagnosed, so the
+// flag has no reader. Kept referenced so the helper survives until the trace
+// is trimmed back to opt-in.
+void detectionDebug
 
 // Console helpers. Deliberately on globalThis rather than a settings toggle:
 // this is for diagnosing a specific machine's hardware, not a shipped feature.
@@ -1984,6 +1989,56 @@ globalThis.__detectDebug = (on = true) => {
   console.log(`[Detect] tracing ${on ? 'ON' : 'OFF'}`)
 }
 globalThis.__detectState = () => detectionSnapshot()
+
+// Collector used by __diag(). Null except while a capture is in progress.
+let diagCollect = null
+
+/**
+ * Capture a few detection cycles to a log file and report where it landed.
+ *
+ * Reading this off the console is impractical -- the loop ticks at display
+ * rate, so the interesting lines scroll away instantly. This writes a short
+ * report instead.
+ *
+ *   await __diag()        // ~4 cycles, about 7 seconds
+ */
+globalThis.__diag = async (cycles = 4) => {
+  const lines = []
+  const stamp = new Date().toISOString()
+  lines.push(`=== detection diagnostic ${stamp} ===`)
+  lines.push(`layout=${state.layoutMode} frozen=${state.frozen} ` +
+    `detectionRunning=${state.detectionRunning}`)
+  for (const side of ['left', 'right']) {
+    const v = side === 'left' ? elements.leftVideo : elements.rightVideo
+    const id = side === 'left' ? state.leftDeviceId : state.rightDeviceId
+    lines.push(`${side}: device=${id ? id.slice(0, 16) : 'none'} ` +
+      `readyState=${v?.readyState} size=${v?.videoWidth}x${v?.videoHeight} ` +
+      `refs=${id ? getReferenceScreenshots(id).length : 0}`)
+  }
+
+  diagCollect = (line) => lines.push(line)
+  setDiagnosticSink((line) => lines.push(line))
+  const seen = lines.length
+  await new Promise((r) => setTimeout(r, DETECT_INTERVAL_MS * cycles + 500))
+  diagCollect = null
+  setDiagnosticSink(null)
+
+  if (lines.length === seen) lines.push('(no detection cycles ran during the capture window)')
+  if (!window.electronAPI?.diagLog) {
+    console.error('[Diag] electronAPI.diagLog missing -- preload did not expose it. ' +
+      'Dumping to console instead:')
+    console.log(lines.join('\n'))
+    return null
+  }
+  const file = await window.electronAPI.diagLog(lines)
+  if (!file) {
+    console.error('[Diag] main process could not write the file. Dumping here instead:')
+    console.log(lines.join('\n'))
+  } else {
+    console.log(`[Diag] written to:\n${file}`)
+  }
+  return file
+}
 
 function startDetectionLoop() {
   if (state.detectionRunning) return
@@ -2001,45 +2056,33 @@ function startDetectionLoop() {
     // Diagnostic: every early-continue below silently skips detection, and
     // there is no way to tell from the outside which one fired. Logged once
     // per cycle when debug logging is on.
-    if (detectionDebug()) {
-      console.log(`[Detect] cycle: ${devicesToCheck.length} active device(s)`,
-        devicesToCheck.map(d => ({ side: d.side, deviceId: d.deviceId.slice(0, 12) })))
-      if (devicesToCheck.length === 0) {
-        console.warn('[Detect] SKIP: no active devices -- ' +
-          'getUniqueActiveDevices() returned nothing, so nothing is checked')
-      }
+    if (diagCollect) {
+      diagCollect(`cycle: ${devicesToCheck.length} device(s) ` +
+        devicesToCheck.map(d => `${d.side}:${d.deviceId.slice(0, 8)}`).join(' '))
     }
 
     for (const { deviceId, video, side } of devicesToCheck) {
       if (!video.srcObject) {
-        if (detectionDebug()) console.warn(`[Detect] SKIP ${side}: video has no srcObject`)
+        diagCollect?.(`SKIP ${side}: no srcObject`)
         continue
       }
       if (video.readyState < 2) {
-        if (detectionDebug()) {
-          console.warn(`[Detect] SKIP ${side}: readyState ${video.readyState} < 2 (no frame yet)`)
-        }
+        diagCollect?.(`SKIP ${side}: readyState ${video.readyState} < 2`)
         continue
       }
       if (!isDetectionReady(deviceId)) {
-        if (detectionDebug()) {
-          console.warn(`[Detect] SKIP ${side}: no reference captured for ${deviceId.slice(0, 12)} ` +
-            '-- capture one via Settings, or detection can never fire')
-        }
+        diagCollect?.(`SKIP ${side}: NO REFERENCE`)
         continue
       }
 
       const source = getFrameSource(deviceId, video)
       if (!source) {
-        if (detectionDebug()) console.warn(`[Detect] SKIP ${side}: no frame source`)
+        diagCollect?.(`SKIP ${side}: no frame source`)
         continue
       }
 
       const isNoSignal = await checkNoSignalFromSource(deviceId, source)
-      if (detectionDebug()) {
-        console.log(`[Detect] ${side}: result=${isNoSignal ? 'NO SIGNAL' : 'has signal'} ` +
-          `(overlay currently ${state.noSignalState[side] ? 'shown' : 'hidden'})`)
-      }
+      diagCollect?.(`${side}: isNoSignal=${isNoSignal} overlay=${state.noSignalState[side]}`)
 
       // Detection is async now, so the layout may have changed while awaiting.
       if (!state.detectionRunning) return
@@ -2069,9 +2112,7 @@ function startDetectionLoop() {
   }
 
   function tick(now) {
-    if (!state.detectionRunning) return
-    // Whichever path got here first wins; cancel the other so a frame arriving
-    // and the watchdog expiring cannot both schedule a follow-up.
+    if (!state.detectionRunning) { console.log('[TRACE] tick: loop not running'); return }
     clearWatchdog()
 
     const t = typeof now === 'number' ? now : performance.now()
@@ -2081,7 +2122,7 @@ function startDetectionLoop() {
       lastRun = t
       running = true
       runDetection()
-        .catch(err => console.error('[Detection] Cycle failed:', err))
+        .catch(err => console.error('[TRACE] runDetection THREW:', err))
         .finally(() => { running = false })
     }
 
@@ -2314,6 +2355,7 @@ async function init() {
   showCursor()
 
   console.log('Input Viewer ready')
+
 }
 
 // Start the app.

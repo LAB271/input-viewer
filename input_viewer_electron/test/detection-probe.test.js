@@ -168,3 +168,85 @@ describe('matchRatio (diagnostics)', () => {
     expect(r).toBeLessThan(0.8)
   })
 })
+
+describe('frame read geometry (crop vs downscale)', () => {
+  // The bug this pins: VideoFrame.copyTo({rect}) CROPS, it does not resize.
+  // Reading with a 480x270 rect from a 1920x1080 frame returned the top-left
+  // corner, while the reference path downscaled the whole picture -- so
+  // detection compared a crop against a scaled whole and could never match.
+  // Measured 61.3% against a 95% threshold, identical for all 12 references
+  // because the mismatch was geometric rather than pictorial.
+  //
+  // Transcribed here because frame-source.js needs a real VideoFrame.
+  const downscale = (src, sw, sh, dw, dh) => {
+    const out = new Uint8ClampedArray(dw * dh * 4)
+    const xr = sw / dw, yr = sh / dh
+    for (let y = 0; y < dh; y++) {
+      const sy = Math.min(sh - 1, (y * yr) | 0)
+      for (let x = 0; x < dw; x++) {
+        const sx = Math.min(sw - 1, (x * xr) | 0)
+        const si = (sy * sw + sx) * 4, di = (y * dw + x) * 4
+        out[di] = src[si]; out[di + 1] = src[si + 1]
+        out[di + 2] = src[si + 2]; out[di + 3] = src[si + 3]
+      }
+    }
+    return out
+  }
+
+  const crop = (src, sw, dw, dh) => {
+    const out = new Uint8ClampedArray(dw * dh * 4)
+    for (let y = 0; y < dh; y++) {
+      for (let x = 0; x < dw; x++) {
+        const si = (y * sw + x) * 4, di = (y * dw + x) * 4
+        out[di] = src[si]; out[di + 1] = src[si + 1]
+        out[di + 2] = src[si + 2]; out[di + 3] = src[si + 3]
+      }
+    }
+    return out
+  }
+
+  // A source whose top-left differs from the rest, like a letterboxed feed.
+  const SW = 192, SH = 108
+  const source = (() => {
+    const d = new Uint8ClampedArray(SW * SH * 4)
+    for (let y = 0; y < SH; y++) {
+      for (let x = 0; x < SW; x++) {
+        const i = (y * SW + x) * 4
+        const inCorner = x < SW / 4 && y < SH / 4
+        d[i] = inCorner ? 20 : 200
+        d[i + 1] = inCorner ? 20 : 200
+        d[i + 2] = inCorner ? 20 : 200
+        d[i + 3] = 255
+      }
+    }
+    return d
+  })()
+
+  it('downscaling preserves the whole picture, cropping does not', () => {
+    const DW = 48, DH = 27
+    const scaled = downscale(source, SW, SH, DW, DH)
+    const cropped = crop(source, SW, DW, DH)
+
+    // The crop lands entirely inside the dark corner.
+    expect(cropped[0]).toBe(20)
+    expect(cropped[(DH - 1) * DW * 4]).toBe(20)
+
+    // The downscale sees both regions.
+    const vals = new Set()
+    for (let i = 0; i < scaled.length; i += 4) vals.add(scaled[i])
+    expect(vals.has(20)).toBe(true)
+    expect(vals.has(200)).toBe(true)
+  })
+
+  it('a downscaled read matches a downscaled reference; a cropped one does not', () => {
+    const DW = 48, DH = 27
+    const reference = { width: DW, height: DH, data: downscale(source, SW, SH, DW, DH) }
+    const goodRead = { width: DW, height: DH, data: downscale(source, SW, SH, DW, DH) }
+    const badRead = { width: DW, height: DH, data: crop(source, SW, DW, DH) }
+
+    expect(matchRatio(goodRead, reference)).toBe(1)
+    // The cropped read is the pre-fix behaviour: a partial match that can never
+    // reach the threshold, exactly as observed on real hardware.
+    expect(matchRatio(badRead, reference)).toBeLessThan(0.95)
+  })
+})
