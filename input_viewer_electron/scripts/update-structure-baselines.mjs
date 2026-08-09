@@ -19,9 +19,19 @@ import { writeFileSync } from 'node:fs'
 import path from 'node:path'
 
 const root = path.resolve(import.meta.dirname, '..')
-const out = execFileSync('node', [path.join(root, 'scripts', 'shader-check.mjs')], {
-  cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024
-})
+// The harness exits non-zero when any saver fails, which includes a saver whose
+// structure has drifted below its recorded baseline -- and that is exactly the
+// state we are here to correct. So read its output regardless of exit code, and
+// only bail if no densities came back at all.
+let out
+try {
+  out = execFileSync('node', [path.join(root, 'scripts', 'shader-check.mjs')], {
+    cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024
+  })
+} catch (err) {
+  // execFileSync throws on non-zero exit but still captures stdout.
+  out = (err.stdout || '') + (err.stderr || '')
+}
 
 const match = out.match(/SHADERCHECK_DENSITIES (\{.*\})/)
 if (!match) {
@@ -53,6 +63,12 @@ const header = [
   ' * baseline.',
   ' *',
   ' * Values are the minimum across the harness seeds, measured on SwiftShader.',
+  ' *',
+  ' * A baseline of 0 means the saver had nothing on screen after the harness\'s',
+  ' * five frames -- true of simulations that need seconds to develop (wave tank\'s',
+  ' * first drop lands at 0.2s; falling sand has ~40 grains on a 240x135 grid by',
+  ' * then). The check skips a zero baseline, so those savers are NOT protected by',
+  ' * it. Verify them by sampling over time instead, as their commits did.',
   ' * Regenerate with `npm run baselines` and review the diff: a baseline that',
   ' * drops sharply is either an intended redesign or the bug this file exists',
   ' * to catch.',

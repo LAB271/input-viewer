@@ -40,6 +40,9 @@ import pong from './pong.js'
 import truchet from './truchet.js'
 import moire from './moire.js'
 import asciiDonut from './ascii-donut.js'
+import doublePendulum from './double-pendulum.js'
+import waveTank from './wave-tank.js'
+import fallingSand from './falling-sand.js'
 
 export const SCREENSAVERS = [
   dvdLogo,
@@ -62,7 +65,10 @@ export const SCREENSAVERS = [
   pong,
   truchet,
   moire,
-  asciiDonut
+  asciiDonut,
+  doublePendulum,
+  waveTank,
+  fallingSand
 ]
 
 let canvasEl = null
