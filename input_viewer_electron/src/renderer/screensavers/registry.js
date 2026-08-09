@@ -41,6 +41,7 @@ import truchet from './truchet.js'
 import moire from './moire.js'
 import asciiDonut from './ascii-donut.js'
 import doublePendulum from './double-pendulum.js'
+import waveTank from './wave-tank.js'
 
 export const SCREENSAVERS = [
   dvdLogo,
@@ -64,7 +65,8 @@ export const SCREENSAVERS = [
   truchet,
   moire,
   asciiDonut,
-  doublePendulum
+  doublePendulum,
+  waveTank
 ]
 
 let canvasEl = null
