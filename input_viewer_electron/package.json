@@ -23,7 +23,7 @@
     "build": "npm run clean && electron-vite build",
     "start": "electron-vite preview",
     "test": "vitest run",
-    "lint": "eslint .",
+    "lint": "node scripts/check-glsl-templates.mjs && eslint .",
     "lint:fix": "eslint . --fix",
     "build:mac": "npm run build && electron-builder --mac --config",
     "build:win": "npm run build && electron-builder --win --config",
