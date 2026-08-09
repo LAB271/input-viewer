@@ -14,6 +14,7 @@
  */
 import { SCREENSAVERS } from './registry.js'
 import { getActivePostChain } from './post-fx.js'
+import { STRUCTURE_BASELINES } from './structure-baselines.js'
 
 const out = document.getElementById('out')
 const canvas = document.getElementById('screensaver-canvas')
@@ -80,6 +81,26 @@ const MAX_BLOWN_FRACTION = 0.9
 // so this only catches a frame that is *exactly* zero everywhere.
 const MIN_LIT_PIXELS = 1
 
+// Per-saver structure baselines (issue #156).
+//
+// Edge density -- the fraction of horizontally adjacent pixels differing by
+// more than 6% luminance -- is what would have caught the physarum failure,
+// where the simulation was correct but the display pass rendered a flat
+// gradient. It scored exactly 0.000 while the frame looked "lit".
+//
+// It CANNOT be a global threshold, and measuring the whole set is what shows
+// why: Reaction Diffusion legitimately scores 0.000 too, and Metaballs 0.0013,
+// while White Particles scores 0.6749. Any floor above zero false-positives on
+// healthy savers; a floor of zero catches nothing.
+//
+// So the baseline is per saver, recorded from a healthy run, and the check is
+// for a large RELATIVE drop rather than an absolute value. Regenerate with
+// `npm run shadercheck -- --update-baselines` after a deliberate visual change.
+// How far below its baseline a saver may drift before failing. Generous,
+// because these are stochastic: a different seed genuinely moves the number.
+// The failure being guarded is a collapse to near-zero, not a wobble.
+const STRUCTURE_DROP_TOLERANCE = 0.35
+
 /**
  * Read back the rendered frame and report NaN, negative and blown-out pixels.
  *
@@ -126,14 +147,27 @@ function inspectPixels(gl, chain) {
     if (lum > 0.004) lit++
     lums[n++] = lum
   }
+  // Edge density: horizontally adjacent pixels differing by more than 6%
+  // luminance. Computed on the unsorted grid, before lums is sorted below.
+  let edges = 0, comparisons = 0
+  for (let y = 0; y < h; y += 2) {
+    for (let x = 1; x < w; x++) {
+      const a = lums[y * w + x - 1]
+      const b = lums[y * w + x]
+      comparisons++
+      if (Math.abs(a - b) > 0.06) edges++
+    }
+  }
+  const edgeDensity = comparisons === 0 ? 0 : edges / comparisons
+
   lums.sort()
   const p05 = lums[Math.floor(0.05 * (total - 1))]
   const peak = lums[total - 1]
-  return { total, nan, negative, blown, lit, p05, peak, hdr: Boolean(hdr) }
+  return { total, nan, negative, blown, lit, p05, peak, edgeDensity, hdr: Boolean(hdr) }
 }
 
 /** Turn pixel stats into a failure message, or null when the frame looks sane. */
-function pixelProblem(s) {
+function pixelProblem(s, name) {
   if (!s) return null // no readback available -- not a failure
   const pct = (n) => `${((n / s.total) * 100).toFixed(1)}%`
   if (s.nan > NAN_PIXELS_ALLOWED) return `${s.nan} NaN pixels (${pct(s.nan)})`
@@ -144,6 +178,19 @@ function pixelProblem(s) {
     return `${pct(s.blown)} of the frame is fully blown out -- double tonemap?`
   }
   if (s.lit < MIN_LIT_PIXELS) return 'frame is entirely black'
+
+  // Structure, against this saver's own baseline (#156). A global threshold
+  // cannot work here: Reaction Diffusion legitimately scores 0.000 while White
+  // Particles scores 0.62.
+  const baseline = STRUCTURE_BASELINES[name]
+  if (typeof baseline === 'number' && baseline > 0) {
+    const floor = baseline * (1 - STRUCTURE_DROP_TOLERANCE)
+    if (s.edgeDensity < floor) {
+      return `structure collapsed: edge density ${s.edgeDensity.toFixed(4)} is below ` +
+        `${floor.toFixed(4)} (baseline ${baseline}). The frame renders but has lost its ` +
+        'detail -- a flattened display pass or a broken simulation.'
+    }
+  }
   return null
 }
 
@@ -184,13 +231,28 @@ async function run() {
       // Only report a pixel problem when nothing worse already failed --
       // a saver that threw will obviously also render nothing useful.
       if (!error) {
-        const problem = pixelProblem(pixels)
+        const problem = pixelProblem(pixels, name)
         if (problem) error = `pixel check: ${problem}`
       }
       results.push({ name, seed: String(seed), error, pixels })
       if (error) log(`FAIL  ${name} (seed ${seed})\n${error}\n`)
     }
   }
+
+  // Emit measured edge densities so baselines can be regenerated from THIS
+  // harness. Measuring them anywhere else bakes in that context's resolution:
+  // edge density is resolution-dependent, and baselines taken at 600x300 while
+  // the harness runs full-viewport produced 13 false positives.
+  const densities = {}
+  for (const r of results) {
+    if (!r.pixels || typeof r.pixels.edgeDensity !== 'number') continue
+    const prev = densities[r.name]
+    // Minimum across seeds: the baseline must not fail the unluckiest run.
+    densities[r.name] = prev === undefined
+      ? r.pixels.edgeDensity
+      : Math.min(prev, r.pixels.edgeDensity)
+  }
+  console.log('SHADERCHECK_DENSITIES ' + JSON.stringify(densities))
 
   const failed = results.filter((r) => r.error)
   log(`\n--- ${results.length - failed.length}/${results.length} runs OK ---`)
