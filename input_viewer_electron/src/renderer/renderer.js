@@ -29,7 +29,9 @@ import {
   initScreensavers,
   startScreensaver,
   stopScreensaver,
-  isScreensaverRunning
+  isScreensaverRunning,
+  getActiveIndex,
+  screensaverCount
 } from './screensavers/registry.js'
 
 // =============================================================================
@@ -763,6 +765,41 @@ function startScreensaverRotation() {
   }, state.screensaverRotateDelay)
 }
 
+/**
+ * Start the screensaver on demand, or step to the next/previous one.
+ *
+ * Exists so the wall can be browsed without waiting out the no-signal delay:
+ * production only starts a saver after state.dvdScreensaverDelay (5 minutes)
+ * and then rotates every state.screensaverRotateDelay, which makes reviewing
+ * the set on the real display impractical.
+ *
+ * @param {number} step 0 to just show one, +1/-1 to move through the list
+ */
+function stepScreensaver(step) {
+  const count = screensaverCount()
+
+  if (!isScreensaverRunning()) {
+    // Not running: show the overlay and start. A step of 0 gets a random pick,
+    // which matches what a real no-signal activation would have done.
+    elements.dvdOverlay.classList.remove('hidden')
+    const name = step === 0 ? startScreensaver() : startScreensaver(0)
+    console.log(`[Screensaver] Manually started: ${name}`)
+  } else if (step !== 0) {
+    // Wrap in both directions so + at the end returns to the first.
+    const next = ((getActiveIndex() + step) % count + count) % count
+    const name = startScreensaver(next)
+    console.log(`[Screensaver] Manual step to ${next + 1}/${count}: ${name}`)
+  } else {
+    // Already running and no step: treat as "turn it off".
+    hideDvdScreensaver()
+    return
+  }
+
+  // Restart the rotation countdown. Without this the auto-rotate can fire
+  // seconds after a manual pick and jump away from whatever was just selected.
+  startScreensaverRotation()
+}
+
 /** Cancel the rotation timer. */
 function stopScreensaverRotation() {
   if (state.screensaverRotateInterval) {
@@ -1431,6 +1468,25 @@ function handleKeyDown(event) {
       break
     case 'q':
       window.electronAPI.quitApp()
+      break
+    case 'v':
+      // Toggle the screensaver on demand. Not 'S': that is documented in the
+      // README as single-view layout, and taking it would either break a
+      // documented binding or quietly make the docs wrong.
+      event.preventDefault()
+      stepScreensaver(0)
+      break
+    case '+':
+    case '=':
+      // '=' is the unshifted key that produces '+' on US/UK layouts, so both
+      // land here -- otherwise stepping forward would need Shift held.
+      event.preventDefault()
+      stepScreensaver(1)
+      break
+    case '-':
+    case '_':
+      event.preventDefault()
+      stepScreensaver(-1)
       break
     case 'pageup':
     case 'arrowleft':

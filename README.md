@@ -42,13 +42,24 @@ The app includes auto-updates and will notify you when new versions are availabl
 
 | Key         | Action                              |
 | ----------- | ----------------------------------- |
-| `D`         | Dual view (both feeds)              |
-| `S`         | Single view (selected feed centered)|
+| `D`         | Dual view (both feeds) — *see note* |
+| `S`         | Single view (selected feed centered) — *see note* |
 | `1-4`       | Select input directly               |
 | `Space`     | Freeze/unfreeze current feed        |
 | `F11` / `F` | Toggle fullscreen                   |
 | `Escape`    | Exit fullscreen                     |
 | `Q`         | Quit                                |
+| `V`         | Show/hide the screensaver           |
+| `+` / `-`   | Step through the screensavers       |
+
+> **Note:** `D` and `S` are not currently wired to the keyboard handler — layout
+> is switchable from the dropdown panel only. The rows are kept here because the
+> shortcut is intended; tracked in #157.
+
+`V` starts the screensaver immediately rather than waiting out the five-minute
+no-signal delay, and `+` / `-` step through the set (wrapping at both ends).
+Stepping restarts the rotation countdown, so a manual pick is not replaced
+moments later by the automatic rotation.
 
 Hover over the top edge to reveal the settings dropdown panel.
 
