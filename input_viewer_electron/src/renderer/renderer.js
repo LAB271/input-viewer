@@ -32,6 +32,10 @@ import {
   isScreensaverRunning
 } from './screensavers/registry.js'
 
+// Imported directly rather than through the registry: the split-flap board is
+// the no-signal display, not one of the rotating screensavers (#92).
+import splitFlap from './screensavers/split-flap.js'
+
 // =============================================================================
 // State Management
 // =============================================================================
@@ -667,11 +671,50 @@ async function syncSystemVolume() {
   }
 }
 
+// Live split-flap board per side, one per no-signal overlay (#92).
+//
+// This is the *no-signal display*, not a screensaver: it appears the moment
+// signal drops, whereas the screensaver rotation only starts after
+// state.dvdScreensaverDelay. The board carries information (NO SIGNAL /
+// AWAITING INPUT / STANDBY), which is the point -- an abstract animation the
+// instant a feed dies reads as a crash, a departures board reads as deliberate.
+const noSignalBoards = { left: null, right: null }
+
+function startNoSignalBoard(side, overlay) {
+  if (noSignalBoards[side]) return
+  const canvas = overlay.querySelector('.no-signal-board')
+  if (!canvas) return
+  // Size the backing store to the element, or the board lays out against a
+  // 300x150 default and the tile grid is wrong.
+  const rect = canvas.getBoundingClientRect()
+  canvas.width = Math.max(1, Math.round(rect.width))
+  canvas.height = Math.max(1, Math.round(rect.height))
+  try {
+    const board = splitFlap.create(canvas)
+    board.start()
+    noSignalBoards[side] = board
+    // Hide the HTML fallback only once the board is actually running.
+    overlay.classList.add('board-active')
+  } catch (err) {
+    // Leaves the HTML "NO SIGNAL" text visible, which is the whole point of
+    // keeping it in the markup.
+    console.error('[NoSignal] Split-flap board unavailable:', err)
+  }
+}
+
+function stopNoSignalBoard(side, overlay) {
+  if (!noSignalBoards[side]) return
+  try { noSignalBoards[side].stop() } catch { /* already torn down */ }
+  noSignalBoards[side] = null
+  overlay.classList.remove('board-active')
+}
+
 function showNoSignal(side) {
   const feed = side === 'left' ? elements.leftFeed : elements.rightFeed
   const overlay = feed.querySelector('.no-signal-overlay')
   overlay.classList.remove('hidden')
   state.noSignalState[side] = true
+  startNoSignalBoard(side, overlay)
 }
 
 function hideNoSignal(side) {
@@ -679,6 +722,9 @@ function hideNoSignal(side) {
   const overlay = feed.querySelector('.no-signal-overlay')
   overlay.classList.add('hidden')
   state.noSignalState[side] = false
+  // Release the GL context rather than leaving it running behind a hidden
+  // overlay -- two idle WebGL contexts per wall is real GPU memory.
+  stopNoSignalBoard(side, overlay)
 }
 
 /**

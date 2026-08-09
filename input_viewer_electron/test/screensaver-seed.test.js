@@ -379,6 +379,10 @@ describe('screensaver module contract', () => {
     const infra = new Set([
       'gl-base.js', 'glsl-lib.js', 'post-fx.js', 'registry.js', 'seed.js',
       'glyph-atlas.js',
+      // The no-signal display, not a rotating screensaver (#92): it is driven
+      // directly by renderer.js when a feed loses signal, so it is deliberately
+      // absent from SCREENSAVERS.
+      'split-flap.js',
       'preview.js', 'preview.html',
       'shadercheck.js', 'shadercheck.html'
     ])

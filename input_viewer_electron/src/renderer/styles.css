@@ -142,6 +142,22 @@ body.cursor-visible .input-label {
   z-index: 10;
 }
 
+/* Split-flap board fills the overlay (#92). Sits under the scanlines so the
+   CRT texture still reads over the tiles. */
+.no-signal-board {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* Hidden once the board is running; it is the no-WebGL fallback. */
+.no-signal-overlay.board-active .no-signal-content {
+  display: none;
+}
+
 /* Scanlines effect */
 .no-signal-scanlines {
   position: absolute;

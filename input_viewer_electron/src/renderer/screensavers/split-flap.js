@@ -20,7 +20,7 @@
  * Per-activation variation: word order, flap speed, stagger and palette.
  */
 import { createGLRuntime, createFullscreenPass, luminanceScale } from './gl-base.js'
-import { GLSL, createUniformCache } from './glsl-lib.js'
+import { createUniformCache } from './glsl-lib.js'
 import { createRng } from './seed.js'
 import { buildGlyphAtlas, uploadGlyphAtlas, FLAP_CHARS } from './glyph-atlas.js'
 
@@ -50,11 +50,20 @@ uniform vec2 uGrid;          // cols, rows
 uniform vec2 uTileBox;       // tile size in pixels, including the gap
 uniform vec2 uOrigin;        // pixel offset of the grid's bottom-left
 uniform float uCharCount;
-uniform vec3 uPhase;
 uniform float uLumaScale;
 out vec4 fragColor;
 
-${GLSL.palette}
+// Fixed board colours, deliberately NOT from the per-activation palette.
+//
+// This started out running the tiles through palettePerceptual with a random
+// hue phase, which meant the board came out green or magenta as often as cream.
+// Every other saver is abstract and benefits from that variation; this one is
+// imitating a real object, and a departures board is cream on near-black. The
+// illusion is the whole point, so the colours are constants.
+const vec3 INK        = vec3(0.98, 0.90, 0.68);  // warm cream, slightly amber
+const vec3 TILE_UPPER = vec3(0.085, 0.082, 0.078);
+const vec3 TILE_LOWER = vec3(0.055, 0.053, 0.050);
+const vec3 SURROUND   = vec3(0.016, 0.016, 0.018);
 
 void main() {
   vec2 rel = gl_FragCoord.xy - uOrigin;
@@ -62,7 +71,7 @@ void main() {
 
   // Outside the board: dark surround.
   if (cellF.x < 0.0 || cellF.y < 0.0 || cellF.x >= uGrid.x || cellF.y >= uGrid.y) {
-    fragColor = vec4(palettePerceptual(0.72, uPhase) * 0.02 * uLumaScale, 1.0);
+    fragColor = vec4(SURROUND * uLumaScale, 1.0);
     return;
   }
 
@@ -73,7 +82,7 @@ void main() {
   vec2 gap = vec2(0.055, 0.045);
   if (inTile.x < gap.x || inTile.x > 1.0 - gap.x ||
       inTile.y < gap.y || inTile.y > 1.0 - gap.y) {
-    fragColor = vec4(palettePerceptual(0.72, uPhase) * 0.02 * uLumaScale, 1.0);
+    fragColor = vec4(SURROUND * uLumaScale, 1.0);
     return;
   }
   // Re-normalise inside the tile face.
@@ -88,7 +97,7 @@ void main() {
   // Tile body: two-tone, darker in the lower half, with a split line across the
   // middle. Without these it reads as flat text rather than a mechanical board.
   float lower = step(face.y, 0.5);
-  vec3 body = palettePerceptual(0.66 + uPhase.x, uPhase) * (lower > 0.5 ? 0.055 : 0.075);
+  vec3 body = lower > 0.5 ? TILE_LOWER : TILE_UPPER;
   // The split line itself.
   float split = 1.0 - smoothstep(0.0, 0.012, abs(face.y - 0.5));
   body = mix(body, body * 0.35, split);
@@ -109,8 +118,7 @@ void main() {
       float ink = texture(uAtlas, atlasUv).r;
       // Cream on dark, the classic board colouring. #92 expects this to survive
       // ambient-light washout better than the dim particle savers (#88).
-      vec3 inkCol = palettePerceptual(0.13 + uPhase.x, uPhase) * 1.25;
-      col = mix(col, inkCol, ink);
+      col = mix(col, INK, ink);
     }
   }
 
@@ -125,7 +133,6 @@ export default {
     let runtime = null, gl = null, pass = null, atlasTex = null, stateTex = null
 
     const rng = createRng(seedValue)
-    const palettePhase = [rng.next(), 0.33 + rng.next() * 0.2, 0.67 + rng.next() * 0.2]
     // Flaps per second. A real board is fast and noisy; too slow and it reads
     // as a slideshow rather than a mechanism.
     const flapRate = rng.range(11, 17)
@@ -183,27 +190,46 @@ export default {
         // whichever axis is binding -- #92 documents a prototype that used a
         // fixed 9 columns and left two-thirds of the wall empty with a
         // half-tile clipped at the left edge.
-        const aspect = canvas.width / canvas.height
-        cols = Math.max(8, Math.min(48, Math.round(ROWS * aspect * TILE_RATIO)))
-        const tileW = Math.min(canvas.width / cols, (canvas.height / ROWS) / TILE_RATIO)
-        const tileH = tileW * TILE_RATIO
-        const boardW = tileW * cols
-        const boardH = tileH * ROWS
-        // Centre the grid explicitly.
-        const originX = (canvas.width - boardW) * 0.5
-        const originY = (canvas.height - boardH) * 0.5
+        //
+        // Recomputed whenever the canvas size changes, not just once: the
+        // overlay is resized by a window resize and by a dual/single layout
+        // switch, and a stale grid drawn against a new uResolution puts the
+        // tiles out of alignment with the cell maths.
+        let layout = null
+        let lastW = 0, lastH = 0
 
-        const n = cols * ROWS
-        current = new Float32Array(n * 4)
-        target = new Uint8Array(n)
-        settleAt = new Float32Array(n)
-        for (let i = 0; i < n; i++) {
-          current[i * 4] = rng.int(0, FLAP_CHARS.length - 1)
-          current[i * 4 + 1] = 0
-          current[i * 4 + 3] = 1
+        function computeLayout() {
+          const aspect = canvas.width / canvas.height
+          cols = Math.max(8, Math.min(48, Math.round(ROWS * aspect * TILE_RATIO)))
+          const tileW = Math.min(canvas.width / cols, (canvas.height / ROWS) / TILE_RATIO)
+          const tileH = tileW * TILE_RATIO
+          layout = {
+            tileW,
+            tileH,
+            // Centre the grid explicitly.
+            originX: (canvas.width - tileW * cols) * 0.5,
+            originY: (canvas.height - tileH * ROWS) * 0.5
+          }
+          lastW = canvas.width
+          lastH = canvas.height
         }
+
+        computeLayout()
+        function rebuildTiles() {
+          const count = cols * ROWS
+          current = new Float32Array(count * 4)
+          target = new Uint8Array(count)
+          settleAt = new Float32Array(count)
+          for (let i = 0; i < count; i++) {
+            current[i * 4] = rng.int(0, FLAP_CHARS.length - 1)
+            current[i * 4 + 1] = 0
+            current[i * 4 + 3] = 1
+          }
+          setMessage(messageIndex)
+        }
+
         messageIndex = 0
-        setMessage(messageIndex)
+        rebuildTiles()
         messageStart = 0
         lastTime = 0
 
@@ -229,8 +255,22 @@ export default {
           const dt = lastTime === 0 ? 0.016 : Math.min(time - lastTime, 0.1)
           lastTime = time
 
+          if (canvas.width !== lastW || canvas.height !== lastH) {
+            const prevCols = cols
+            computeLayout()
+            if (cols !== prevCols) {
+              // Column count changed, so every per-tile array is the wrong
+              // length. Rebuild and re-lay-out the current message.
+              rebuildTiles()
+              gl.bindTexture(gl.TEXTURE_2D, stateTex)
+              gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, cols, ROWS, 0,
+                gl.RGBA, gl.FLOAT, current)
+            }
+          }
+
+          const tileCount = cols * ROWS
           let allSettled = true
-          for (let i = 0; i < n; i++) {
+          for (let i = 0; i < tileCount; i++) {
             const idx = current[i * 4]
             const want = target[i]
             if (Math.round(idx) === want && current[i * 4 + 1] === 0) continue
@@ -262,7 +302,7 @@ export default {
               messageIndex++
               setMessage(messageIndex)
               // Stagger is measured from now.
-              for (let i = 0; i < n; i++) settleAt[i] += time
+              for (let i = 0; i < tileCount; i++) settleAt[i] += time
               messageStart = 0
             }
           }
@@ -281,10 +321,9 @@ export default {
             g.uniform1i(u('uState'), 1)
             g.uniform2f(u('uResolution'), canvas.width, canvas.height)
             g.uniform2f(u('uGrid'), cols, ROWS)
-            g.uniform2f(u('uTileBox'), tileW, tileH)
-            g.uniform2f(u('uOrigin'), originX, originY)
+            g.uniform2f(u('uTileBox'), layout.tileW, layout.tileH)
+            g.uniform2f(u('uOrigin'), layout.originX, layout.originY)
             g.uniform1f(u('uCharCount'), FLAP_CHARS.length)
-            g.uniform3f(u('uPhase'), palettePhase[0], palettePhase[1], palettePhase[2])
             g.uniform1f(u('uLumaScale'), lumaScale)
           })
         })
