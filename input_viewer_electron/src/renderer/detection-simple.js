@@ -671,6 +671,48 @@ export function setDebugLogging(enabled) {
 }
 
 /**
+ * Reference sets whose device is no longer present (#160).
+ *
+ * References are keyed strictly by deviceId. Virtual cameras can regenerate
+ * their id on reinstall or version change, and macOS can issue different ids
+ * after a permission reset -- when that happens the stored reference is
+ * orphaned, hasReferenceScreenshot() misses, and detection returns "has signal"
+ * for that device forever with nothing logged. Silent, and indistinguishable
+ * from never having configured it.
+ *
+ * @param {string[]} presentDeviceIds ids currently enumerated
+ * @returns {Array<{deviceId: string, count: number}>}
+ */
+export function findOrphanedReferences(presentDeviceIds) {
+  const present = new Set(presentDeviceIds)
+  const orphans = []
+  for (const [deviceId, list] of referenceScreenshots.entries()) {
+    if (!present.has(deviceId)) orphans.push({ deviceId, count: list.length })
+  }
+  return orphans
+}
+
+/**
+ * Discard reference sets whose device is no longer present.
+ *
+ * Not called automatically: a device absent at startup may simply be
+ * unplugged, and silently discarding its references would lose work the
+ * operator did deliberately. Offered through the settings UI instead.
+ *
+ * @param {string[]} presentDeviceIds
+ * @returns {number} how many device entries were removed
+ */
+export function pruneOrphanedReferences(presentDeviceIds) {
+  const orphans = findOrphanedReferences(presentDeviceIds)
+  for (const { deviceId } of orphans) {
+    referenceScreenshots.delete(deviceId)
+    deviceStates.delete(deviceId)
+    clearScaledCache(deviceId)
+  }
+  return orphans.length
+}
+
+/**
  * Check if detection system is ready for a device
  * @param {string} deviceId - Device identifier
  * @returns {boolean}

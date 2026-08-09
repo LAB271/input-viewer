@@ -1635,3 +1635,122 @@ kbd {
 .setup-btn:hover {
   background-color: rgba(0, 102, 255, 0.3);
 }
+
+/* =============================================================================
+   No-signal reference manager (#161, #160)
+
+   A device with no reference is silently inert -- detection returns "has
+   signal" unconditionally and logs nothing -- so the row badge exists to make
+   that state visible rather than leaving it to a console command.
+   ============================================================================= */
+
+.input-name-row .ref-toggle-btn {
+  padding: 8px 12px;
+  background: transparent;
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.input-name-row .ref-toggle-btn:hover {
+  background: var(--hover-color);
+}
+
+/* Amber rather than red: an input with no reference is unconfigured, not
+   broken, and several inputs legitimately never need one. */
+.input-name-row .ref-toggle-btn.warn {
+  border-color: rgba(245, 158, 11, 0.5);
+  color: rgb(245, 158, 11);
+}
+
+.ref-panel {
+  padding: 10px 12px 14px;
+  margin: -4px 0 8px;
+  border-left: 2px solid var(--panel-border);
+}
+
+.ref-panel.hidden {
+  display: none;
+}
+
+.ref-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.ref-item {
+  position: relative;
+}
+
+/* Thumbnails are the stored ImageData drawn directly, so they are already at
+   the detect resolution -- no second copy is kept for the UI. */
+.ref-thumb {
+  width: 128px;
+  height: auto;
+  display: block;
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+}
+
+.ref-delete {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  line-height: 18px;
+  text-align: center;
+  border: 1px solid var(--panel-border);
+  border-radius: 50%;
+  background: var(--panel-bg, #1a1a1a);
+  color: var(--text-muted);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.ref-delete:hover {
+  border-color: rgba(239, 68, 68, 0.6);
+  color: rgb(239, 68, 68);
+}
+
+.ref-empty,
+.ref-note {
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.ref-orphans {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  border-radius: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.ref-prune-btn {
+  padding: 6px 10px;
+  background: transparent;
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.ref-prune-btn:hover {
+  background: var(--hover-color);
+}

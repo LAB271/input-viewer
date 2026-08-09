@@ -10,6 +10,9 @@ import {
   checkNoSignalFromSource,
   isReady as isDetectionReady,
   getReferenceScreenshots,
+  findOrphanedReferences,
+  pruneOrphanedReferences,
+  removeReferenceScreenshot,
   referenceAtSize,
   matchRatio,
   setDiagnosticSink,
@@ -1125,6 +1128,7 @@ async function selectInputForSide(deviceId, side) {
  */
 function renderSettingsInputList() {
   elements.settingsInputList.innerHTML = ''
+  renderOrphanedReferences()
 
   state.devices.forEach((device, index) => {
     const isEnabled = isInputEnabled(device.deviceId)
@@ -1134,11 +1138,20 @@ function renderSettingsInputList() {
     const row = document.createElement('div')
     row.className = 'input-name-row'
 
+    // Reference state for this input. A device with none is silently inert:
+    // checkNoSignalFromSource returns false unconditionally and logs nothing,
+    // so detection appears broken when it has simply never been configured.
+    // Surfacing the count is the point (#161).
+    const refs = getReferenceScreenshots(device.deviceId)
+
     row.innerHTML = `
       <span class="input-number">${index + 1}</span>
       <div class="toggle-switch ${isEnabled ? 'active' : ''}" data-device-id="${device.deviceId}"></div>
       <input type="text" class="input-name-field" value="${customName}" data-device-id="${device.deviceId}" />
       <button class="default-btn${isDefault ? ' active' : ''}" data-device-id="${device.deviceId}">Default</button>
+      <button class="ref-toggle-btn${refs.length === 0 ? ' warn' : ''}" data-device-id="${device.deviceId}">
+        ${refs.length === 0 ? '⚠ No reference' : `${refs.length} reference${refs.length === 1 ? '' : 's'}`}
+      </button>
     `
 
     // Toggle switch event
@@ -1167,7 +1180,123 @@ function renderSettingsInputList() {
     })
 
     elements.settingsInputList.appendChild(row)
+
+    // Expandable reference panel: thumbnails with per-reference delete.
+    const panel = document.createElement('div')
+    panel.className = 'ref-panel hidden'
+    renderReferencePanel(panel, device.deviceId)
+    elements.settingsInputList.appendChild(panel)
+
+    row.querySelector('.ref-toggle-btn').addEventListener('click', () => {
+      panel.classList.toggle('hidden')
+    })
   })
+}
+
+/**
+ * Surface references whose device is not currently connected (#160).
+ *
+ * References are keyed by deviceId, and some devices -- virtual cameras
+ * especially -- regenerate theirs on reinstall. When that happens the stored
+ * reference is stranded and detection silently reports "has signal" for that
+ * device forever. Nothing in the UI showed this, so the only symptom was
+ * detection appearing not to work.
+ *
+ * Pruning is offered rather than automatic: a device absent right now may just
+ * be unplugged, and discarding its references would throw away deliberate work.
+ */
+function renderOrphanedReferences() {
+  const orphans = findOrphanedReferences(state.devices.map((d) => d.deviceId))
+  if (orphans.length === 0) return
+
+  const total = orphans.reduce((n, o) => n + o.count, 0)
+  const box = document.createElement('div')
+  box.className = 'ref-orphans'
+
+  const text = document.createElement('span')
+  text.textContent =
+    `${total} reference${total === 1 ? '' : 's'} belong to ` +
+    `${orphans.length} device${orphans.length === 1 ? '' : 's'} that ${orphans.length === 1 ? 'is' : 'are'} ` +
+    'not connected. If a device changed its id, re-capture its no-signal screen.'
+  box.appendChild(text)
+
+  const btn = document.createElement('button')
+  btn.className = 'ref-prune-btn'
+  btn.textContent = 'Discard them'
+  btn.addEventListener('click', async () => {
+    pruneOrphanedReferences(state.devices.map((d) => d.deviceId))
+    state.settings.noSignalReferences = serializeReferences()
+    await saveSettings()
+    renderSettingsInputList()
+  })
+  box.appendChild(btn)
+
+  elements.settingsInputList.appendChild(box)
+}
+
+/**
+ * Fill a device's reference panel with thumbnails and delete buttons.
+ *
+ * References are stored as ImageData at the detect resolution, so a thumbnail
+ * is just that data drawn to a small canvas -- no separate copy is kept.
+ *
+ * @param {HTMLElement} panel
+ * @param {string} deviceId
+ */
+function renderReferencePanel(panel, deviceId) {
+  const refs = getReferenceScreenshots(deviceId)
+  panel.innerHTML = ''
+
+  if (refs.length === 0) {
+    const hint = document.createElement('p')
+    hint.className = 'ref-empty'
+    hint.textContent =
+      'No reference captured. Detection cannot fire for this input until one ' +
+      'exists: show its no-signal screen, then use Capture above.'
+    panel.appendChild(hint)
+    return
+  }
+
+  const grid = document.createElement('div')
+  grid.className = 'ref-grid'
+
+  refs.forEach((ref, i) => {
+    const item = document.createElement('div')
+    item.className = 'ref-item'
+
+    const canvas = document.createElement('canvas')
+    canvas.width = ref.width
+    canvas.height = ref.height
+    canvas.className = 'ref-thumb'
+    canvas.getContext('2d').putImageData(ref, 0, 0)
+    canvas.title = `${ref.width}x${ref.height}`
+
+    const del = document.createElement('button')
+    del.className = 'ref-delete'
+    del.textContent = '×'
+    del.title = 'Delete this reference'
+    del.addEventListener('click', async () => {
+      removeReferenceScreenshot(deviceId, i)
+      state.settings.noSignalReferences = serializeReferences()
+      await saveSettings()
+      // Re-render the whole list: the row's count badge changes too.
+      renderSettingsInputList()
+    })
+
+    item.appendChild(canvas)
+    item.appendChild(del)
+    grid.appendChild(item)
+  })
+
+  panel.appendChild(grid)
+
+  const note = document.createElement('p')
+  note.className = 'ref-note'
+  note.textContent = refs.length === 1
+    ? 'A frame matching this reference counts as no signal. Capture more if this ' +
+      'card shows other no-signal screens (unsupported mode, HDCP error).'
+    : `A frame matching any of these ${refs.length} counts as no signal.`
+  panel.appendChild(note)
 }
 
 /**
@@ -1888,6 +2017,19 @@ async function initNoSignalDetection() {
       console.log(`[Detection] Migrated references to detect resolution: ` +
         `${(before / 1048576).toFixed(1)}MB -> ${(after / 1048576).toFixed(1)}MB`)
     }
+  }
+
+  // Warn about references whose device is no longer present (#160). Keyed by
+  // deviceId, so a virtual camera that regenerated its id leaves its reference
+  // stranded -- detection then reports "has signal" for that device forever
+  // with nothing logged, which is indistinguishable from never configuring it.
+  const orphans = findOrphanedReferences(state.devices.map((d) => d.deviceId))
+  if (orphans.length > 0) {
+    const total = orphans.reduce((n, o) => n + o.count, 0)
+    console.warn(`[Detection] ${total} reference(s) belong to ${orphans.length} device(s) ` +
+      'that are not currently connected. If a device changed its id, re-capture ' +
+      'its no-signal screen; the settings panel lists them.',
+    orphans.map((o) => `${o.deviceId.slice(0, 16)} (${o.count})`))
   }
 
   console.log('[Detection] No-signal detection initialized')
