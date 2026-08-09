@@ -19,6 +19,16 @@ import {
   listScreensavers
 } from './registry.js'
 import { getActivePostChain } from './post-fx.js'
+// The no-signal board is not a registry entry -- it is the no-signal display
+// rather than a rotating screensaver (#92) -- but it still needs reviewing at
+// wall aspect and under washout, so the preview appends it to the list and
+// drives it directly.
+import splitFlap from './split-flap.js'
+
+const EXTRAS = [splitFlap]
+
+// Total selectable entries: the shipped rotation plus the preview-only extras.
+const TOTAL_ENTRIES = SCREENSAVERS.length + EXTRAS.length
 
 const canvas = document.getElementById('screensaver-canvas')
 const listEl = document.getElementById('list')
@@ -143,18 +153,33 @@ function normalize(s) {
 // Resolve initial selection from the URL hash (#1 or #plasma), else random.
 function initialIndex() {
   const raw = decodeURIComponent(location.hash.replace(/^#/, '')).trim()
-  if (!raw) return Math.floor(Math.random() * SCREENSAVERS.length)
+  if (!raw) return Math.floor(Math.random() * TOTAL_ENTRIES)
   const asNum = Number(raw)
   if (!Number.isNaN(asNum) && raw !== '') {
-    return ((asNum % SCREENSAVERS.length) + SCREENSAVERS.length) % SCREENSAVERS.length
+    // The hash is 1-based (select() writes current + 1, and the list is
+    // numbered from 1), so convert before wrapping. Treating it as a 0-based
+    // index meant #1 opened the *second* saver and #N -- the last one -- wrapped
+    // to 0 and silently showed the first. That was invisible while the last
+    // entry was rarely asked for by number.
+    return (((asNum - 1) % TOTAL_ENTRIES) + TOTAL_ENTRIES) % TOTAL_ENTRIES
   }
   const idx = SCREENSAVERS.findIndex((s) => normalize(s.name) === normalize(raw))
-  return idx >= 0 ? idx : 0
+  if (idx >= 0) return idx
+  const extra = EXTRAS.findIndex((m) => normalize(m.name) === normalize(raw))
+  if (extra >= 0) return SCREENSAVERS.length + extra
+  // Unmatched names used to fall through to index 0, which silently showed the
+  // DVD logo and read as "the saver I asked for is broken".
+  console.warn(`[Preview] No screensaver matches "${raw}" -- showing the first one.`)
+  return 0
 }
 
 function renderList() {
   listEl.innerHTML = ''
-  listScreensavers().forEach((name, i) => {
+  const names = [
+    ...listScreensavers(),
+    ...EXTRAS.map((m) => `${m.name} (no-signal)`)
+  ]
+  names.forEach((name, i) => {
     const btn = document.createElement('button')
     btn.textContent = `${i + 1}. ${name}`
     btn.className = i === current ? 'active' : ''
@@ -168,13 +193,33 @@ function renderList() {
 // note the seed the console logs, pass it back, and you get the same frame.
 const pinnedSeed = new URLSearchParams(location.search).get('seed')
 
+// Extras are driven here rather than through the registry, so the preview owns
+// their lifecycle and must stop the previous one itself.
+let activeExtra = null
+
+function stopActiveExtra() {
+  if (!activeExtra) return
+  try { activeExtra.stop() } catch { /* already torn down */ }
+  activeExtra = null
+}
+
 function select(index, reseed = false) {
-  current = ((index % SCREENSAVERS.length) + SCREENSAVERS.length) % SCREENSAVERS.length
+  current = ((index % TOTAL_ENTRIES) + TOTAL_ENTRIES) % TOTAL_ENTRIES
   stopScreensaver()
+  stopActiveExtra()
   // `reseed` forces a fresh look even when a seed is pinned, so the S key can
   // still cycle through variations without editing the URL.
   const seed = reseed ? undefined : (pinnedSeed ?? undefined)
-  const name = startScreensaver(current, seed)
+
+  let name
+  if (current < SCREENSAVERS.length) {
+    name = startScreensaver(current, seed)
+  } else {
+    const mod = EXTRAS[current - SCREENSAVERS.length]
+    activeExtra = mod.create(canvas, seed)
+    activeExtra.start()
+    name = `${mod.name} (no-signal display)`
+  }
   location.hash = String(current + 1)
   document.title = `Screensaver: ${name}`
   renderList()
