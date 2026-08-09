@@ -18,32 +18,39 @@
  * baseline.
  *
  * Values are the minimum across the harness seeds, measured on SwiftShader.
+ *
+ * A baseline of 0 means the saver had nothing on screen after the harness's
+ * five frames -- true of simulations that need seconds to develop (wave tank's
+ * first drop lands at 0.2s; falling sand has ~40 grains on a 240x135 grid by
+ * then). The check skips a zero baseline, so those savers are NOT protected by
+ * it. Verify them by sampling over time instead, as their commits did.
  * Regenerate with `npm run baselines` and review the diff: a baseline that
  * drops sharply is either an intended redesign or the bug this file exists
  * to catch.
  */
 export const STRUCTURE_BASELINES = {
-  "Boids": 0.6127,
-  "White Particles": 0.4877,
-  "Particle Swarm": 0.4736,
-  "Moire Interference": 0.3012,
-  "Raymarch Fractal": 0.2779,
-  "Plasma": 0.1702,
+  "Boids": 0.6617,
+  "White Particles": 0.4853,
+  "Particle Swarm": 0.4505,
+  "Moire Interference": 0.3008,
+  "Raymarch Fractal": 0.2705,
+  "Plasma": 0.1691,
   "Game of Life": 0.1223,
   "Truchet Tiles": 0.0957,
-  "Flow Field": 0.0865,
-  "Matrix Rain": 0.043,
+  "Flow Field": 0.0866,
+  "Matrix Rain": 0.0429,
   "Voronoi": 0.034,
-  "Strange Attractor": 0.0286,
-  "Reaction Diffusion": 0.0154,
-  "Metaballs": 0.0119,
-  "ASCII Doughnut": 0.0118,
+  "Strange Attractor": 0.0284,
+  "Reaction Diffusion": 0.0152,
+  "Metaballs": 0.0125,
+  "ASCII Doughnut": 0.0117,
   "Pong": 0.0077,
-  "Burning Ship": 0.0031,
-  "Double Pendulum": 0.0029,
+  "Burning Ship": 0.0038,
+  "Double Pendulum": 0.0028,
   "Julia Set": 0.0026,
-  "DVD Logo": 0.0025,
-  "Mandelbrot": 0.002,
-  "Starfield Warp": 0.001,
+  "DVD Logo": 0.0024,
+  "Mandelbrot": 0.0017,
+  "Falling Sand": 0.0016,
+  "Starfield Warp": 0.0008,
   "Wave Tank": 0,
 }

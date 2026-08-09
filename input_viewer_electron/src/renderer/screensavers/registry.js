@@ -42,6 +42,7 @@ import moire from './moire.js'
 import asciiDonut from './ascii-donut.js'
 import doublePendulum from './double-pendulum.js'
 import waveTank from './wave-tank.js'
+import fallingSand from './falling-sand.js'
 
 export const SCREENSAVERS = [
   dvdLogo,
@@ -66,7 +67,8 @@ export const SCREENSAVERS = [
   moire,
   asciiDonut,
   doublePendulum,
-  waveTank
+  waveTank,
+  fallingSand
 ]
 
 let canvasEl = null
