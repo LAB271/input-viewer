@@ -43,6 +43,8 @@ import asciiDonut from './ascii-donut.js'
 import doublePendulum from './double-pendulum.js'
 import waveTank from './wave-tank.js'
 import fallingSand from './falling-sand.js'
+import frost from './frost.js'
+import treeGrowth from './tree-growth.js'
 
 export const SCREENSAVERS = [
   dvdLogo,
@@ -68,7 +70,9 @@ export const SCREENSAVERS = [
   asciiDonut,
   doublePendulum,
   waveTank,
-  fallingSand
+  fallingSand,
+  frost,
+  treeGrowth
 ]
 
 let canvasEl = null
