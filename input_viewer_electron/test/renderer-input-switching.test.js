@@ -18,7 +18,19 @@ installRendererDom()
 
 // Stub the capture pipeline before importing: renderer.js reads
 // navigator.mediaDevices at call time, so this only needs to exist by then.
-const fakeTrack = () => ({ stop: vi.fn(), getSettings: () => ({}) })
+// Mirrors the MediaStreamTrack surface the renderer actually uses. The stub
+// previously omitted getCapabilities, so every stream setup in these tests threw
+// "track.getCapabilities is not a function" and was swallowed by the catch --
+// the tests passed while the production path was aborting, and CI logs filled
+// with the error. A stub that is missing a method the code calls hides exactly
+// the bug it should expose.
+const fakeTrack = () => ({
+  stop: vi.fn(),
+  getSettings: () => ({ width: 1920, height: 1080, frameRate: 60 }),
+  getCapabilities: () => ({
+    width: { max: 1920 }, height: { max: 1080 }, frameRate: { max: 60 }
+  })
+})
 const fakeStream = () => ({
   getTracks: () => [fakeTrack()],
   getVideoTracks: () => [fakeTrack()],
@@ -298,5 +310,29 @@ describe('getDefaultSettings', () => {
     const a = getDefaultSettings()
     a.inputs.cam1 = { enabled: false }
     expect(getDefaultSettings().inputs).toEqual({})
+  })
+})
+
+describe('MediaStreamTrack stub fidelity', () => {
+  // A stub missing a method the production code calls does not fail a test --
+  // the call throws, the surrounding catch swallows it, and the assertion still
+  // passes while the real path aborted. That is what happened here: the stub
+  // had no getCapabilities, so every stream setup threw and CI logs filled with
+  // "track.getCapabilities is not a function" beside a green run.
+  //
+  // This pins the stub to the surface renderer.js actually uses.
+  it('provides every track method the renderer calls', () => {
+    const track = fakeTrack()
+    for (const method of ['stop', 'getSettings', 'getCapabilities']) {
+      expect(typeof track[method], `stub is missing ${method}()`).toBe('function')
+    }
+  })
+
+  it('returns shapes the renderer can read without optional chaining traps', () => {
+    const track = fakeTrack()
+    const settings = track.getSettings()
+    const caps = track.getCapabilities()
+    expect(typeof settings.width).toBe('number')
+    expect(typeof caps.width?.max).toBe('number')
   })
 })

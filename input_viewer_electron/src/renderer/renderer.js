@@ -482,15 +482,29 @@ async function startVideoStream(deviceId, videoElement, side) {
     // Log stream info for diagnostics
     const track = stream.getVideoTracks()[0]
     const settings = track.getSettings()
-    const caps = track.getCapabilities()
+    // getCapabilities is optional in the spec and genuinely absent on some
+    // platforms and virtual devices, so it cannot be called unguarded -- doing
+    // so threw "track.getCapabilities is not a function" and aborted the whole
+    // stream setup, which surfaced as the feed simply not starting.
+    const caps = typeof track.getCapabilities === 'function' ? track.getCapabilities() : {}
     console.log(`[Video] ${side} stream: ${settings.width}x${settings.height} @ ${settings.frameRate}fps`)
-    console.log(`[Video] ${side} capabilities: ${caps.width?.max}x${caps.height?.max} @ ${caps.frameRate?.max}fps`)
+    console.log(`[Video] ${side} capabilities: ${caps.width?.max ?? 'unknown'}x` +
+      `${caps.height?.max ?? 'unknown'} @ ${caps.frameRate?.max ?? 'unknown'}fps`)
 
     // Some capture cards start at low default resolution and need a retry.
     // Cap target at 1920x1080 to prefer uncompressed formats over MJPEG.
-    if (settings.width <= 640 && caps.width?.max > 640) {
-      const targetWidth = Math.min(caps.width.max, 1920)
-      const targetHeight = Math.min(caps.height.max, 1080)
+    //
+    // Absent capabilities mean "unknown", not "no better mode exists" (#152).
+    // Gating on caps.width?.max > 640 skipped the retry entirely for any device
+    // reporting nothing -- virtual cameras commonly do -- leaving the feed
+    // stuck at whatever low resolution it happened to open with. The retry has
+    // its own try/catch and re-acquires at default resolution on failure, so
+    // attempting it speculatively is safe.
+    const maxCapW = caps.width?.max ?? 1920
+    const maxCapH = caps.height?.max ?? 1080
+    if (settings.width <= 640 && maxCapW > 640) {
+      const targetWidth = Math.min(maxCapW, 1920)
+      const targetHeight = Math.min(maxCapH, 1080)
       console.log(`[Video] ${side} resolution too low, retrying for ${targetWidth}x${targetHeight}...`)
 
       const hasAudio = stream.getAudioTracks().length > 0
@@ -1859,6 +1873,21 @@ async function initNoSignalDetection() {
   // Load saved reference screenshots from settings
   if (state.settings.noSignalReferences) {
     await deserializeReferences(state.settings.noSignalReferences)
+
+    // Rewrite settings if migration shrank anything. References used to be
+    // stored at full capture resolution -- twelve 1080p entries made
+    // settings.json 21MB, re-read and base64-decoded on every startup -- and
+    // deserializeReferences now downscales them to the detect size. Without
+    // this the shrink would not reach disk until the next manual capture.
+    const before = JSON.stringify(state.settings.noSignalReferences).length
+    const migrated = serializeReferences()
+    const after = JSON.stringify(migrated).length
+    if (after < before * 0.9) {
+      state.settings.noSignalReferences = migrated
+      await saveSettings()
+      console.log(`[Detection] Migrated references to detect resolution: ` +
+        `${(before / 1048576).toFixed(1)}MB -> ${(after / 1048576).toFixed(1)}MB`)
+    }
   }
 
   console.log('[Detection] No-signal detection initialized')

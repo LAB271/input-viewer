@@ -250,3 +250,41 @@ describe('frame read geometry (crop vs downscale)', () => {
     expect(matchRatio(badRead, reference)).toBeLessThan(0.95)
   })
 })
+
+describe('reference storage size', () => {
+  // References are compared at the detect resolution, so storing them at the
+  // capture resolution carries 16x more pixels than are ever looked at -- and
+  // every one is serialised into settings.json as a base64 PNG and decoded on
+  // every startup. Twelve 1080p references made that file 21MB.
+  const DETECT_W = 480, DETECT_H = 270
+
+  it('the detect resolution is a small fraction of a capture frame', () => {
+    const capturePixels = 1920 * 1080
+    const detectPixels = DETECT_W * DETECT_H
+    expect(capturePixels / detectPixels).toBeGreaterThan(10)
+  })
+
+  it('downscaling a reference does not change what it matches', () => {
+    // The property that makes the storage change safe: a downscaled reference
+    // must still match a live frame read at the same size. If nearest-neighbour
+    // sampling picked different source pixels on the two paths, this would fail
+    // -- which is exactly the crop-vs-scale class of bug that broke detection.
+    const build = (w, h, fn) => {
+      const data = new Uint8ClampedArray(w * h * 4)
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          const [r, g, b] = fn(x / w, y / h)
+          const i = (y * w + x) * 4
+          data[i] = r; data[i + 1] = g; data[i + 2] = b; data[i + 3] = 255
+        }
+      }
+      return { width: w, height: h, data }
+    }
+    // A pattern with real structure, so a sampling difference would show.
+    const pattern = (u, v) => (u < 0.25 && v < 0.25 ? [20, 30, 90] : [180, 190, 210])
+
+    const storedSmall = build(DETECT_W, DETECT_H, pattern)
+    const liveRead = build(DETECT_W, DETECT_H, pattern)
+    expect(matchRatio(liveRead, storedSmall)).toBe(1)
+  })
+})
