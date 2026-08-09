@@ -19,6 +19,13 @@ export const CONFIG = {
   debugLogging: false
 }
 
+// Diagnostic sink: when set, detection writes a per-cycle report here instead
+// of to the console. Temporary, for the no-signal investigation.
+let diagSink = null
+
+/** @param {((line: string) => void)|null} fn */
+export function setDiagnosticSink(fn) { diagSink = fn }
+
 // Cheap-probe sizing. See probeFrames() for why 32.
 const PROBE_POINTS = 32
 // Allowed probe misses before rejecting. ~15% of the points, so a reference
@@ -302,7 +309,7 @@ function clearScaledCache(deviceId) {
  * @param {number} height
  * @returns {{width: number, height: number, data: Uint8ClampedArray}|null}
  */
-function referenceAtSize(deviceId, refIndex, reference, width, height) {
+export function referenceAtSize(deviceId, refIndex, reference, width, height) {
   if (!width || !height) return null
 
   // Already the right size: use as-is.
@@ -412,14 +419,48 @@ export async function checkNoSignalFromSource(deviceId, source) {
     // which is what keeps a list of references affordable.
     let isMatch = false
     let matchedIndex = -1
+    const trace = []
     for (let i = 0; i < references.length; i++) {
       const scaled = referenceAtSize(deviceId, i, references[i], frame.width, frame.height)
-      if (!scaled) continue
-      if (!probeFrames(frame, scaled)) continue
-      if (compareFrames(frame, scaled)) {
-        isMatch = true
-        matchedIndex = i
-        break
+      if (!scaled) { trace.push(`#${i} scale-failed`); continue }
+      const probed = probeFrames(frame, scaled)
+      if (!probed) {
+        trace.push(`#${i} ${references[i].width}x${references[i].height} probe-rejected ` +
+          `ratio=${matchRatio(frame, scaled).toFixed(3)}`)
+        continue
+      }
+      const full = compareFrames(frame, scaled)
+      trace.push(`#${i} ${references[i].width}x${references[i].height} probe-ok ` +
+        `ratio=${matchRatio(frame, scaled).toFixed(3)} match=${full}`)
+      if (full) { isMatch = true; matchedIndex = i; break }
+    }
+    if (diagSink) {
+      diagSink(`compare frame=${frame.width}x${frame.height} need=${CONFIG.matchThreshold}`)
+      for (const t of trace) diagSink('  ' + t)
+      const scaled0 = referenceAtSize(deviceId, 0, references[0], frame.width, frame.height)
+      if (scaled0) {
+        // Raw pixels from both sides. Identical match ratios across
+        // independent captures point at a structural difference -- channel
+        // order, premultiplied alpha, or a reference that never held the
+        // picture -- rather than at the images genuinely differing.
+        const at = (buf, px) => `[${buf[px * 4]},${buf[px * 4 + 1]},${buf[px * 4 + 2]},${buf[px * 4 + 3]}]`
+        const pts = [0, 1000, 30000, 64800, 100000]
+        diagSink('  frame px: ' + pts.map((p) => at(frame.data, p)).join(' '))
+        diagSink('  ref   px: ' + pts.map((p) => at(scaled0.data, p)).join(' '))
+        // Channel-swap check: does matching R against B score better?
+        let asIs = 0, swapped = 0, n = 0
+        for (let px = 0; px < frame.width * frame.height; px += 97) {
+          const o = px * 4
+          const fr = frame.data[o], fg = frame.data[o + 1], fb = frame.data[o + 2]
+          const rr = scaled0.data[o], rg = scaled0.data[o + 1], rb = scaled0.data[o + 2]
+          const th = CONFIG.pixelDifferenceThreshold
+          const near = (a, b) => (a - b < 0 ? b - a : a - b) <= th
+          if (near(fr, rr) && near(fg, rg) && near(fb, rb)) asIs++
+          if (near(fr, rb) && near(fg, rg) && near(fb, rr)) swapped++
+          n++
+        }
+        diagSink(`  ratio as-is=${(asIs / n).toFixed(3)} rgb-swapped=${(swapped / n).toFixed(3)}` +
+          (swapped > asIs * 1.2 ? '   <-- CHANNEL ORDER MISMATCH' : ''))
       }
     }
 
@@ -611,4 +652,39 @@ export function setDebugLogging(enabled) {
  */
 export function isReady(deviceId) {
   return referenceScreenshots.has(deviceId)
+}
+
+/**
+ * The match ratio compareFrames computes internally, without the early exit.
+ *
+ * compareFrames returns a boolean and bails as soon as a match is
+ * arithmetically impossible, which is right for the hot path but useless for
+ * diagnosis -- "false" does not say whether a frame missed by 1% or 90%. This
+ * always scans fully and returns the number, so a near-miss is visible.
+ *
+ * Diagnostics only; the detection path uses compareFrames.
+ *
+ * @param {{width:number,height:number,data:Uint8ClampedArray}} frame
+ * @param {{width:number,height:number,data:Uint8ClampedArray}} reference
+ * @returns {number} fraction of sampled pixels that matched, 0..1
+ */
+export function matchRatio(frame, reference) {
+  if (frame.width !== reference.width || frame.height !== reference.height) return 0
+  const a = frame.data
+  const b = reference.data
+  const stride = 4 * CONFIG.sampleRate
+  const threshold = CONFIG.pixelDifferenceThreshold
+  let sampled = 0
+  let matching = 0
+  for (let i = 0; i < a.length; i += stride) {
+    sampled++
+    const dr = a[i] - b[i]
+    if ((dr < 0 ? -dr : dr) > threshold) continue
+    const dg = a[i + 1] - b[i + 1]
+    if ((dg < 0 ? -dg : dg) > threshold) continue
+    const db = a[i + 2] - b[i + 2]
+    if ((db < 0 ? -db : db) > threshold) continue
+    matching++
+  }
+  return sampled === 0 ? 0 : matching / sampled
 }

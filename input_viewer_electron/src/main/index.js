@@ -215,6 +215,39 @@ app.on('window-all-closed', () => {
 // =============================================================================
 
 // Toggle fullscreen
+// Diagnostic log (temporary, for the no-signal detection investigation).
+//
+// Written to the project root rather than userData: in dev, app.getPath
+// ('userData') resolves to .../Application Support/Electron rather than the
+// product directory, which makes the file hard to find and easy to look for in
+// the wrong place. The repo root is unambiguous. Gitignored.
+//
+// process.cwd() is the project root under `npm start` / `npm run dev`. In a
+// packaged app it is not writable, so fall back to userData there.
+function diagLogPath() {
+  const devPath = path.join(process.cwd(), 'detection-diagnostic.log')
+  if (!app.isPackaged) return devPath
+  return path.join(app.getPath('userData'), 'detection-diagnostic.log')
+}
+
+ipcMain.handle('diag-log', (event, lines) => {
+  const file = diagLogPath()
+  try {
+    fs.appendFileSync(file, lines.join('\n') + '\n')
+    console.log('[Diag] wrote', lines.length, 'lines to', file)
+    return file
+  } catch (err) {
+    console.error('[Diag] write failed:', file, err)
+    return null
+  }
+})
+
+ipcMain.handle('diag-log-reset', () => {
+  const file = diagLogPath()
+  try { fs.writeFileSync(file, '') } catch { /* first run */ }
+  return file
+})
+
 ipcMain.handle('toggle-fullscreen', () => {
   if (mainWindow) {
     mainWindow.setFullScreen(!mainWindow.isFullScreen())

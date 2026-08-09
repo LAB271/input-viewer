@@ -50,7 +50,8 @@ export const DETECT_HEIGHT = 270
  */
 export function createWebCodecsFrameSource(track) {
   // Reused across read() calls; see the note in read().
-  let readBuffer = null
+  let readBuffer = null      // downscaled output
+  let fullBuffer = null      // full-resolution source
   if (!supportsWebCodecsFrames()) {
     throw new Error('WebCodecs frame reading is not available')
   }
@@ -93,21 +94,52 @@ export function createWebCodecsFrameSource(track) {
       if (closed || !latest) return null
       const frame = latest
 
-      // Clamp to the frame: a source smaller than the detect size would
-      // otherwise make copyTo read out of bounds.
-      const w = Math.min(DETECT_WIDTH, frame.displayWidth || DETECT_WIDTH)
-      const h = Math.min(DETECT_HEIGHT, frame.displayHeight || DETECT_HEIGHT)
+      // Read the WHOLE frame, then downscale.
+      //
+      // copyTo's `rect` CROPS -- it does not resize. Passing a 480x270 rect
+      // returned the top-left 480x270 pixels of a 1920x1080 frame, i.e. a
+      // window onto the top-left eighth of the picture. The reference path
+      // (captureScreenshot -> referenceAtSize) downscales the *full* frame, so
+      // detection was comparing a crop against a scaled whole and could never
+      // match: measured 61.3% against a 95% threshold, identical for every
+      // stored reference because the mismatch is geometric, not pictorial.
+      const srcW = frame.displayWidth || frame.codedWidth
+      const srcH = frame.displayHeight || frame.codedHeight
+      if (!srcW || !srcH) return null
 
-      const rect = { x: 0, y: 0, width: w, height: h }
-      const size = frame.allocationSize({ rect, format: 'RGBA' })
-      // Reuse the buffer across cycles. A fresh Uint8ClampedArray here is
-      // ~518KB at the detect size, allocated once per device per detection
-      // cycle -- steady GC pressure on the main thread for a buffer whose
-      // contents are consumed immediately and never retained.
-      if (!readBuffer || readBuffer.length < size) {
-        readBuffer = new Uint8ClampedArray(size)
+      const fullSize = frame.allocationSize({ format: 'RGBA' })
+      if (!fullBuffer || fullBuffer.length < fullSize) {
+        fullBuffer = new Uint8ClampedArray(fullSize)
       }
-      await frame.copyTo(readBuffer, { rect, format: 'RGBA' })
+      await frame.copyTo(fullBuffer, { format: 'RGBA' })
+
+      // Target size: cap at the detect resolution but never upscale a source
+      // that is already smaller.
+      const w = Math.min(DETECT_WIDTH, srcW)
+      const h = Math.min(DETECT_HEIGHT, srcH)
+
+      // Nearest-neighbour downscale, matching referenceAtSize exactly so both
+      // sides of the comparison sample the same way.
+      const outSize = w * h * 4
+      if (!readBuffer || readBuffer.length < outSize) {
+        readBuffer = new Uint8ClampedArray(outSize)
+      }
+      const xRatio = srcW / w
+      const yRatio = srcH / h
+      for (let y = 0; y < h; y++) {
+        const sy = Math.min(srcH - 1, (y * yRatio) | 0)
+        const srcRow = sy * srcW
+        const dstRow = y * w
+        for (let x = 0; x < w; x++) {
+          const sx = Math.min(srcW - 1, (x * xRatio) | 0)
+          const si = (srcRow + sx) * 4
+          const di = (dstRow + x) * 4
+          readBuffer[di] = fullBuffer[si]
+          readBuffer[di + 1] = fullBuffer[si + 1]
+          readBuffer[di + 2] = fullBuffer[si + 2]
+          readBuffer[di + 3] = fullBuffer[si + 3]
+        }
+      }
       // The consumer reads synchronously before the next cycle overwrites this,
       // which holds because detection awaits each read in turn and the loop
       // guards against overlapping cycles.

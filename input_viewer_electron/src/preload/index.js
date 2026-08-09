@@ -9,6 +9,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   isFullscreen: () => ipcRenderer.invoke('is-fullscreen'),
   quitApp: () => ipcRenderer.invoke('quit-app'),
 
+  // Diagnostic log (temporary; see the no-signal detection investigation)
+  diagLog: (lines) => ipcRenderer.invoke('diag-log', lines),
+  diagLogReset: () => ipcRenderer.invoke('diag-log-reset'),
+
   // Settings persistence
   loadSettings: () => ipcRenderer.invoke('load-settings'),
   saveSettings: (settings) => ipcRenderer.invoke('save-settings', settings),

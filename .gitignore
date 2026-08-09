@@ -35,3 +35,6 @@ input_viewer_electron/junit.xml
 continue.md
 
 */opencv.js
+
+# Detection diagnostic log (temporary, dev only -- see the no-signal work)
+detection-diagnostic.log

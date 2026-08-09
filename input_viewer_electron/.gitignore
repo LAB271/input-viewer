@@ -24,3 +24,6 @@ Thumbs.db
 # Environment
 .env
 .env.local
+
+# Detection diagnostic log (temporary, dev only)
+detection-diagnostic.log
