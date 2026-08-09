@@ -5,6 +5,8 @@
 // Screenshot-based detection without OpenCV
 // =============================================================================
 
+import { DETECT_WIDTH, DETECT_HEIGHT } from './frame-source.js'
+
 export const CONFIG = {
   // Pixel comparison threshold (0-255 per channel)
   pixelDifferenceThreshold: 30,
@@ -183,12 +185,18 @@ export async function deserializeReferences(data) {
           img.src = entry.dataUrl
         })
 
+        // Downscale on load as well as on capture, so an existing
+        // settings.json shrinks without the operator re-capturing anything.
+        // References stored before this were at full capture resolution --
+        // twelve 1080p entries made the file 21MB, re-parsed every startup.
+        const w = Math.min(DETECT_WIDTH, entry.width)
+        const h = Math.min(DETECT_HEIGHT, entry.height)
         const canvas = document.createElement('canvas')
-        canvas.width = entry.width
-        canvas.height = entry.height
+        canvas.width = w
+        canvas.height = h
         const ctx = canvas.getContext('2d')
-        ctx.drawImage(img, 0, 0)
-        decoded.push(ctx.getImageData(0, 0, entry.width, entry.height))
+        ctx.drawImage(img, 0, 0, entry.width, entry.height, 0, 0, w, h)
+        decoded.push(ctx.getImageData(0, 0, w, h))
       } catch (err) {
         // One bad entry must not discard the device's other references.
         console.error(`[Detection] Failed to restore a reference for ${deviceId}:`, err)
@@ -617,18 +625,35 @@ export function captureScreenshot(video, canvas) {
   try {
     // Use willReadFrequently hint to optimize for getImageData calls
     const ctx = canvas.getContext('2d', { willReadFrequently: true })
-    canvas.width = video.videoWidth || 640
-    canvas.height = video.videoHeight || 480
+    const srcW = video.videoWidth || 640
+    const srcH = video.videoHeight || 480
 
-    if (canvas.width === 0 || canvas.height === 0) {
+    if (srcW === 0 || srcH === 0) {
       console.error('[Detection] Cannot capture screenshot: invalid video dimensions')
       return null
     }
 
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+    // Store at the detect resolution, not the capture resolution.
+    //
+    // Comparison always happens at DETECT_WIDTH x DETECT_HEIGHT, so a
+    // full-resolution reference carries 16x more pixels than are ever looked
+    // at -- and every one of them is serialised into settings.json as a base64
+    // PNG, then read, parsed and decoded on every startup. Twelve 1080p
+    // references made that file 21MB.
+    //
+    // Downscaling here rather than at compare time also removes the per-cycle
+    // referenceAtSize() resample entirely for the common case, since the stored
+    // reference is already the size the comparison wants.
+    canvas.width = Math.min(DETECT_WIDTH, srcW)
+    canvas.height = Math.min(DETECT_HEIGHT, srcH)
+
+    // drawImage scales; this is the whole frame, not a crop. (The WebCodecs
+    // read path had exactly that bug -- see frame-source.js.)
+    ctx.drawImage(video, 0, 0, srcW, srcH, 0, 0, canvas.width, canvas.height)
     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
 
-    console.log(`[Detection] Captured screenshot: ${imageData.width}x${imageData.height}`)
+    console.log(`[Detection] Captured screenshot: ${imageData.width}x${imageData.height} ` +
+      `(from ${srcW}x${srcH})`)
     return imageData
   } catch (err) {
     console.error('[Detection] Error capturing screenshot:', err)
