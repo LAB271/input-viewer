@@ -27,6 +27,10 @@ import { buildGlyphAtlas, uploadGlyphAtlas, FLAP_CHARS } from './glyph-atlas.js'
 const GLYPH_PX = 64
 // Tiles are taller than they are wide, like a real board.
 const TILE_RATIO = 1.45
+// Upper bound on tile height:width. A real flap is taller than it is wide but
+// not dramatically so; past about 1.7 the tiles read as slots and the glyph
+// floats in an empty box.
+const MAX_TILE_RATIO = 1.7
 // Rows of text on the board. Three fits a 5:1 strip without the tiles becoming
 // too small to read across a room.
 const ROWS = 3
@@ -40,6 +44,15 @@ const MESSAGES = [
   ['STANDBY', 'NO INPUT', 'CONNECT SOURCE'],
   ['NO SIGNAL', 'SELECT INPUT', '1 2 3 4']
 ]
+
+// The longest line any message contains, plus a tile of breathing room each
+// side. The grid must never be narrower than this: columns were previously
+// derived from the aspect ratio alone, so a 16:9 display got 8 columns for a
+// 14-character line and every message was silently clipped -- "NO SIGNAL"
+// rendered as "NO SIGNA".
+const LONGEST_LINE = MESSAGES.reduce(
+  (max, rows) => rows.reduce((m, line) => Math.max(m, line.length), max), 0)
+const MIN_COLS = LONGEST_LINE + 2
 
 const FRAG = /* glsl */ `#version 300 es
 precision highp float;
@@ -200,9 +213,24 @@ export default {
 
         function computeLayout() {
           const aspect = canvas.width / canvas.height
-          cols = Math.max(8, Math.min(48, Math.round(ROWS * aspect * TILE_RATIO)))
+          // Wide enough for the aspect, but never narrower than the longest
+          // message. On a 5:1 wall the aspect term dominates; on 16:9 the
+          // message term does, which is the case that was broken.
+          const byAspect = Math.round(ROWS * aspect * TILE_RATIO)
+          cols = Math.max(MIN_COLS, Math.min(48, byAspect))
+
+          // Tile size from whichever axis binds. With cols now driven by text
+          // length on a squarer display, width is usually the binding one --
+          // deriving from height alone would overflow horizontally.
           const tileW = Math.min(canvas.width / cols, (canvas.height / ROWS) / TILE_RATIO)
-          const tileH = tileW * TILE_RATIO
+
+          // Let tiles stretch vertically into height the fixed ratio leaves
+          // unused. On 16:9 a strict TILE_RATIO board fills the full width but
+          // under half the height, which reads as a small strip floating in a
+          // large black field. Capped at 2.2x so tiles stay recognisably
+          // flap-shaped rather than becoming tall slots.
+          const maxTileH = (canvas.height / ROWS) * 0.92
+          const tileH = Math.min(maxTileH, tileW * MAX_TILE_RATIO)
           layout = {
             tileW,
             tileH,
