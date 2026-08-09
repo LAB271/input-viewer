@@ -47,7 +47,7 @@ Object.defineProperty(globalThis.navigator, 'mediaDevices', {
 const {
   state, elements, setLayout, selectInput, toggleFreeze,
   getInputName, isInputEnabled, setInputName, toggleInputEnabled,
-  getDefaultSettings, setCenterGap, setBorderWidth,
+  getDefaultSettings, setCenterGap, setBorderWidth, handleKeyDown,
 } = await import('../src/renderer/renderer.js')
 
 // Reset the shared module state between tests. renderer.js keeps one `state`
@@ -334,5 +334,45 @@ describe('MediaStreamTrack stub fidelity', () => {
     const caps = track.getCapabilities()
     expect(typeof settings.width).toBe('number')
     expect(typeof caps.width?.max).toBe('number')
+  })
+})
+
+describe('keyboard shortcuts', () => {
+  // setLayout has always been tested directly, but nothing asserted that a
+  // KEYPRESS reached it -- so D and S sat in the README for months doing
+  // nothing (#157). These drive handleKeyDown, which is the part that broke.
+  const press = (key, target = document.body) =>
+    handleKeyDown({ key, target, preventDefault: () => {} })
+
+  it('D switches to dual view', () => {
+    resetState()
+    setLayout('single')
+    press('d')
+    expect(state.layoutMode).toBe('dual')
+  })
+
+  it('S switches to single view', () => {
+    resetState()
+    setLayout('dual')
+    press('s')
+    expect(state.layoutMode).toBe('single')
+  })
+
+  it('is case-insensitive, so shift or caps lock still works', () => {
+    resetState()
+    setLayout('dual')
+    press('S')
+    expect(state.layoutMode).toBe('single')
+    press('D')
+    expect(state.layoutMode).toBe('dual')
+  })
+
+  it('ignores keys while typing in an input field', () => {
+    // The settings panel has a rename field; typing "dual" there must not
+    // rearrange the wall.
+    resetState()
+    setLayout('dual')
+    press('s', { tagName: 'INPUT' })
+    expect(state.layoutMode).toBe('dual')
   })
 })
