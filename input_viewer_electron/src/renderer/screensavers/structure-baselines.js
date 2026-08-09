@@ -38,6 +38,7 @@ export const STRUCTURE_BASELINES = {
   "Game of Life": 0.1223,
   "Truchet Tiles": 0.0956,
   "Flow Field": 0.0857,
+  "Bicycle Horizon": 0.0616,
   "Matrix Rain": 0.0427,
   "Voronoi": 0.0341,
   "Strange Attractor": 0.0286,
