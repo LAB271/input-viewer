@@ -9,6 +9,12 @@
 import {
   checkNoSignalFromSource,
   isReady as isDetectionReady,
+  getReferenceScreenshots,
+  referenceAtSize,
+  matchRatio,
+  probeFrames,
+  CONFIG,
+  setDebugLogging,
   saveReferenceScreenshot,
   captureScreenshot,
   serializeReferences,
@@ -1878,6 +1884,107 @@ const DETECT_INTERVAL_MS = 1600
  * rAF remains the fallback when rVFC is unavailable or no video is playing --
  * detection must keep running even if it is only to notice nothing is arriving.
  */
+/**
+ * Whether to emit the verbose detection trace.
+ *
+ * Read live rather than captured, so it can be toggled from the DevTools
+ * console mid-run without a rebuild:
+ *
+ *   __detectDebug(true)    // start tracing
+ *   __detectDebug(false)   // stop
+ *   __detectState()        // one-shot snapshot of why detection is or is not firing
+ */
+
+/**
+ * One-shot diagnostic: why is (or isn't) no-signal detection firing?
+ *
+ * Walks the same preconditions the detection loop does and reports the first
+ * one that fails, per side, rather than making someone read a stream of
+ * per-cycle logs. Exposed on globalThis for the DevTools console.
+ */
+async function detectionSnapshot() {
+  const out = {
+    detectionLoopRunning: state.detectionRunning,
+    frozen: state.frozen,
+    layoutMode: state.layoutMode,
+    screensaverRunning: isScreensaverRunning(),
+    sides: {}
+  }
+
+  for (const side of ['left', 'right']) {
+    const video = side === 'left' ? elements.leftVideo : elements.rightVideo
+    const deviceId = side === 'left' ? state.leftDeviceId : state.rightDeviceId
+    const info = { deviceId: deviceId ? deviceId.slice(0, 16) : null }
+
+    if (!deviceId) { info.blocker = 'no device selected for this side'; out.sides[side] = info; continue }
+    if (!video?.srcObject) { info.blocker = 'video element has no stream'; out.sides[side] = info; continue }
+
+    info.readyState = video.readyState
+    info.videoSize = `${video.videoWidth}x${video.videoHeight}`
+    if (video.readyState < 2) { info.blocker = 'readyState < 2 (no decoded frame yet)'; out.sides[side] = info; continue }
+
+    const refs = getReferenceScreenshots(deviceId)
+    info.referenceCount = refs.length
+    info.referenceSizes = refs.map((r) => `${r.width}x${r.height}`)
+    if (refs.length === 0) {
+      info.blocker = 'NO REFERENCE CAPTURED for this device -- detection can never fire. ' +
+        'Capture one from the settings panel while the no-signal screen is showing.'
+      out.sides[side] = info
+      continue
+    }
+
+    // Actually run a comparison and report the numbers behind the verdict.
+    const source = getFrameSource(deviceId, video)
+    if (!source) { info.blocker = 'no frame source could be created'; out.sides[side] = info; continue }
+
+    const frame = await source.read()
+    if (!frame) { info.blocker = 'frame source returned no frame yet'; out.sides[side] = info; continue }
+    info.comparedAt = `${frame.width}x${frame.height}`
+
+    info.perReference = refs.map((ref, i) => {
+      const scaled = referenceAtSize(deviceId, i, ref, frame.width, frame.height)
+      if (!scaled) return { index: i, error: 'could not scale reference' }
+      const probePassed = probeFrames(frame, scaled)
+      return {
+        index: i,
+        referenceSize: `${ref.width}x${ref.height}`,
+        probePassed,
+        matchRatio: probePassed ? matchRatio(frame, scaled) : '(probe rejected, not scanned)',
+        needed: CONFIG.matchThreshold
+      }
+    })
+
+    const anyMatch = info.perReference.some(
+      (r) => typeof r.matchRatio === 'number' && r.matchRatio >= CONFIG.matchThreshold)
+    info.verdict = anyMatch ? 'NO SIGNAL (would fire)' : 'has signal (would not fire)'
+    info.overlayShown = state.noSignalState[side]
+    if (!anyMatch) {
+      const best = info.perReference
+        .map((r) => (typeof r.matchRatio === 'number' ? r.matchRatio : 0))
+        .reduce((a, b) => Math.max(a, b), 0)
+      info.blocker = `best match ${(best * 100).toFixed(1)}% is below the ` +
+        `${(CONFIG.matchThreshold * 100).toFixed(0)}% threshold`
+    }
+    out.sides[side] = info
+  }
+
+  console.log('[Detect] snapshot', JSON.parse(JSON.stringify(out)))
+  return out
+}
+
+function detectionDebug() {
+  return globalThis.__INPUT_VIEWER_DETECT_DEBUG__ === true
+}
+
+// Console helpers. Deliberately on globalThis rather than a settings toggle:
+// this is for diagnosing a specific machine's hardware, not a shipped feature.
+globalThis.__detectDebug = (on = true) => {
+  globalThis.__INPUT_VIEWER_DETECT_DEBUG__ = on === true
+  setDebugLogging(on === true)
+  console.log(`[Detect] tracing ${on ? 'ON' : 'OFF'}`)
+}
+globalThis.__detectState = () => detectionSnapshot()
+
 function startDetectionLoop() {
   if (state.detectionRunning) return
   state.detectionRunning = true
@@ -1891,14 +1998,48 @@ function startDetectionLoop() {
   async function runDetection() {
     const devicesToCheck = getUniqueActiveDevices()
 
+    // Diagnostic: every early-continue below silently skips detection, and
+    // there is no way to tell from the outside which one fired. Logged once
+    // per cycle when debug logging is on.
+    if (detectionDebug()) {
+      console.log(`[Detect] cycle: ${devicesToCheck.length} active device(s)`,
+        devicesToCheck.map(d => ({ side: d.side, deviceId: d.deviceId.slice(0, 12) })))
+      if (devicesToCheck.length === 0) {
+        console.warn('[Detect] SKIP: no active devices -- ' +
+          'getUniqueActiveDevices() returned nothing, so nothing is checked')
+      }
+    }
+
     for (const { deviceId, video, side } of devicesToCheck) {
-      if (!video.srcObject || video.readyState < 2) continue
-      if (!isDetectionReady(deviceId)) continue
+      if (!video.srcObject) {
+        if (detectionDebug()) console.warn(`[Detect] SKIP ${side}: video has no srcObject`)
+        continue
+      }
+      if (video.readyState < 2) {
+        if (detectionDebug()) {
+          console.warn(`[Detect] SKIP ${side}: readyState ${video.readyState} < 2 (no frame yet)`)
+        }
+        continue
+      }
+      if (!isDetectionReady(deviceId)) {
+        if (detectionDebug()) {
+          console.warn(`[Detect] SKIP ${side}: no reference captured for ${deviceId.slice(0, 12)} ` +
+            '-- capture one via Settings, or detection can never fire')
+        }
+        continue
+      }
 
       const source = getFrameSource(deviceId, video)
-      if (!source) continue
+      if (!source) {
+        if (detectionDebug()) console.warn(`[Detect] SKIP ${side}: no frame source`)
+        continue
+      }
 
       const isNoSignal = await checkNoSignalFromSource(deviceId, source)
+      if (detectionDebug()) {
+        console.log(`[Detect] ${side}: result=${isNoSignal ? 'NO SIGNAL' : 'has signal'} ` +
+          `(overlay currently ${state.noSignalState[side] ? 'shown' : 'hidden'})`)
+      }
 
       // Detection is async now, so the layout may have changed while awaiting.
       if (!state.detectionRunning) return
@@ -1929,6 +2070,9 @@ function startDetectionLoop() {
 
   function tick(now) {
     if (!state.detectionRunning) return
+    // Whichever path got here first wins; cancel the other so a frame arriving
+    // and the watchdog expiring cannot both schedule a follow-up.
+    clearWatchdog()
 
     const t = typeof now === 'number' ? now : performance.now()
     // `running` guards re-entry: detection is async and a slow cycle must not
@@ -1944,6 +2088,17 @@ function startDetectionLoop() {
     schedule()
   }
 
+  // Guards against the rVFC deadlock described below: cleared whenever a tick
+  // happens by any route, so only a genuinely stalled feed ever fires it.
+  let watchdog = null
+
+  function clearWatchdog() {
+    if (watchdog !== null) {
+      clearTimeout(watchdog)
+      watchdog = null
+    }
+  }
+
   function schedule() {
     if (!state.detectionRunning) return
 
@@ -1953,6 +2108,24 @@ function startDetectionLoop() {
       for (const video of [elements.leftVideo, elements.rightVideo]) {
         if (video?.srcObject && !video.paused) {
           video.requestVideoFrameCallback(tick)
+
+          // A video that is playing but produces NO new frames never fires
+          // rVFC, so detection stops running entirely -- and a feed that has
+          // stopped producing frames is exactly the case detection exists to
+          // catch. That is not hypothetical: a virtual camera showing a static
+          // image (OBS with no scene change) delivers no frames, so no-signal
+          // could never fire for it.
+          //
+          // The pre-existing requestAnimationFrame fallback below does not
+          // cover this: it only applies when there is no playing video at all.
+          //
+          // So arm a timer alongside rVFC. Whichever fires first runs the tick
+          // and cancels the other.
+          clearWatchdog()
+          watchdog = setTimeout(() => {
+            watchdog = null
+            tick(performance.now())
+          }, DETECT_INTERVAL_MS * 2)
           return
         }
       }

@@ -17,7 +17,7 @@
  * test below is the one that matters; the rest are illustrative cases.
  */
 import { describe, it, expect } from 'vitest'
-import { probeFrames, compareFrames, CONFIG } from '../src/renderer/detection-simple.js'
+import { probeFrames, compareFrames, matchRatio, CONFIG } from '../src/renderer/detection-simple.js'
 
 const W = 480, H = 270
 
@@ -124,5 +124,47 @@ describe('probe rejects live feeds cheaply', () => {
       if (probeFrames(withNoise(ref, 0.3, seed), ref)) passed++
     }
     expect(passed / trials).toBeLessThan(0.25)
+  })
+})
+
+describe('matchRatio (diagnostics)', () => {
+  // compareFrames returns a boolean and bails early, so a failure cannot be
+  // told apart from a near-miss. matchRatio always scans fully and returns the
+  // number, which is what makes __detectState() able to say "best match 88%,
+  // needed 95%" instead of just "no".
+  const px = (r, g, b) => {
+    const data = new Uint8ClampedArray(W * H * 4)
+    for (let i = 0; i < data.length; i += 4) {
+      data[i] = r; data[i + 1] = g; data[i + 2] = b; data[i + 3] = 255
+    }
+    return { width: W, height: H, data }
+  }
+
+  it('is 1 for identical frames', () => {
+    expect(matchRatio(px(20, 40, 160), px(20, 40, 160))).toBe(1)
+  })
+
+  it('is 1 within the pixel threshold', () => {
+    const d = CONFIG.pixelDifferenceThreshold - 1
+    expect(matchRatio(px(20 + d, 40, 160), px(20, 40, 160))).toBe(1)
+  })
+
+  it('is 0 for a completely different frame', () => {
+    expect(matchRatio(px(240, 240, 240), px(20, 40, 160))).toBe(0)
+  })
+
+  it('is 0 when the sizes differ, matching compareFrames', () => {
+    // The real-world case: a card that changes mode between capture and
+    // comparison. Reported as 0 rather than throwing.
+    const small = { width: 320, height: 180, data: new Uint8ClampedArray(320 * 180 * 4) }
+    expect(matchRatio(small, px(20, 40, 160))).toBe(0)
+  })
+
+  it('reports a partial match as a fraction, not a boolean', () => {
+    const ref = px(12, 12, 12)
+    const half = withNoise(ref, 0.5, 3)
+    const r = matchRatio(half, ref)
+    expect(r).toBeGreaterThan(0.2)
+    expect(r).toBeLessThan(0.8)
   })
 })

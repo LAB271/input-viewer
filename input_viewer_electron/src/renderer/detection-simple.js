@@ -302,7 +302,7 @@ function clearScaledCache(deviceId) {
  * @param {number} height
  * @returns {{width: number, height: number, data: Uint8ClampedArray}|null}
  */
-function referenceAtSize(deviceId, refIndex, reference, width, height) {
+export function referenceAtSize(deviceId, refIndex, reference, width, height) {
   if (!width || !height) return null
 
   // Already the right size: use as-is.
@@ -611,4 +611,39 @@ export function setDebugLogging(enabled) {
  */
 export function isReady(deviceId) {
   return referenceScreenshots.has(deviceId)
+}
+
+/**
+ * The match ratio compareFrames computes internally, without the early exit.
+ *
+ * compareFrames returns a boolean and bails as soon as a match is
+ * arithmetically impossible, which is right for the hot path but useless for
+ * diagnosis -- "false" does not say whether a frame missed by 1% or 90%. This
+ * always scans fully and returns the number, so a near-miss is visible.
+ *
+ * Diagnostics only; the detection path uses compareFrames.
+ *
+ * @param {{width:number,height:number,data:Uint8ClampedArray}} frame
+ * @param {{width:number,height:number,data:Uint8ClampedArray}} reference
+ * @returns {number} fraction of sampled pixels that matched, 0..1
+ */
+export function matchRatio(frame, reference) {
+  if (frame.width !== reference.width || frame.height !== reference.height) return 0
+  const a = frame.data
+  const b = reference.data
+  const stride = 4 * CONFIG.sampleRate
+  const threshold = CONFIG.pixelDifferenceThreshold
+  let sampled = 0
+  let matching = 0
+  for (let i = 0; i < a.length; i += stride) {
+    sampled++
+    const dr = a[i] - b[i]
+    if ((dr < 0 ? -dr : dr) > threshold) continue
+    const dg = a[i + 1] - b[i + 1]
+    if ((dg < 0 ? -dg : dg) > threshold) continue
+    const db = a[i + 2] - b[i + 2]
+    if ((db < 0 ? -db : db) > threshold) continue
+    matching++
+  }
+  return sampled === 0 ? 0 : matching / sampled
 }
