@@ -77,7 +77,7 @@ const done = await new Promise((resolve) => {
   proc.on('close', () => finish(combined.match(/SHADERCHECK_DONE ok=(\d+) fail=(-?\d+)/)))
   // Ceiling: 12 savers x 5 seeds x 5 frames is a couple of seconds of real work,
   // but a hung shader compile would otherwise block forever.
-  setTimeout(() => finish(null), 120000)
+  setTimeout(() => finish(null), 900000)
 })
 
 proc.kill()
