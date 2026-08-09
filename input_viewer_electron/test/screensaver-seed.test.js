@@ -315,6 +315,11 @@ describe('GLSL shader sources', () => {
     for (const f of SHADER_SAVERS) {
       const src = readSaver(f)
       for (const block of glslBlocks(src)) {
+        // A saver that drives its own loop (raymarch accumulates temporally, so
+        // it cannot use createShaderScreensaver) supplies the whole shader
+        // itself and therefore MUST declare iSeed. Those blocks carry their own
+        // #version line; the ones spliced onto FRAGMENT_HEADER never do.
+        if (/#version/.test(block)) continue
         expect(block, `${f} must not redeclare iSeed`).not.toMatch(/uniform\s+vec4\s+iSeed/)
       }
     }
