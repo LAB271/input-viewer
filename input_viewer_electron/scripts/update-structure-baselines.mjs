@@ -19,9 +19,19 @@ import { writeFileSync } from 'node:fs'
 import path from 'node:path'
 
 const root = path.resolve(import.meta.dirname, '..')
-const out = execFileSync('node', [path.join(root, 'scripts', 'shader-check.mjs')], {
-  cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024
-})
+// The harness exits non-zero when any saver fails, which includes a saver whose
+// structure has drifted below its recorded baseline -- and that is exactly the
+// state we are here to correct. So read its output regardless of exit code, and
+// only bail if no densities came back at all.
+let out = ''
+try {
+  out = execFileSync('node', [path.join(root, 'scripts', 'shader-check.mjs')], {
+    cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024
+  })
+} catch (err) {
+  // execFileSync throws on non-zero exit but still captures stdout.
+  out = (err.stdout || '') + (err.stderr || '')
+}
 
 const match = out.match(/SHADERCHECK_DENSITIES (\{.*\})/)
 if (!match) {
