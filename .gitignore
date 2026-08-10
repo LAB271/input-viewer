@@ -16,7 +16,13 @@ htmlcov/
 !input-viewer.spec
 
 # Electron
+# Both spellings on purpose. "node_modules/" matches a directory but NOT a
+# symlink of the same name, and symlinking node_modules is how you run several
+# git worktrees off one install instead of paying a full install per tree.
+# Without the bare form, "git add -A" commits the symlink -- which happened in
+# #193 and had to be undone in #194. Do not "tidy" this back to one line.
 node_modules/
+node_modules
 input_viewer_electron/dist/
 input_viewer_electron/out/
 
