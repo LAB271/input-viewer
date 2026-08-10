@@ -43,6 +43,7 @@ export const STRUCTURE_BASELINES = {
   "Voronoi": 0.0341,
   "Strange Attractor": 0.0286,
   "Frost": 0.0251,
+  "Physarum": 0.0212,
   "Reaction Diffusion": 0.0148,
   "Metaballs": 0.0125,
   "ASCII Doughnut": 0.0117,

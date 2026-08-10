@@ -45,6 +45,7 @@ import waveTank from './wave-tank.js'
 import fallingSand from './falling-sand.js'
 import frost from './frost.js'
 import treeGrowth from './tree-growth.js'
+import physarum from './physarum.js'
 import aquarium from './aquarium.js'
 
 export const SCREENSAVERS = [
@@ -74,6 +75,7 @@ export const SCREENSAVERS = [
   fallingSand,
   frost,
   treeGrowth,
+  physarum,
   aquarium
 ]
 
