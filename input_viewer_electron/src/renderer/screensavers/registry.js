@@ -46,6 +46,7 @@ import fallingSand from './falling-sand.js'
 import frost from './frost.js'
 import treeGrowth from './tree-growth.js'
 import physarum from './physarum.js'
+import aquarium from './aquarium.js'
 
 export const SCREENSAVERS = [
   dvdLogo,
@@ -74,7 +75,8 @@ export const SCREENSAVERS = [
   fallingSand,
   frost,
   treeGrowth,
-  physarum
+  physarum,
+  aquarium
 ]
 
 let canvasEl = null
