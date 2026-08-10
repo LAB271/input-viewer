@@ -241,6 +241,12 @@ vec4 fetchInstance(out vec2 uvOut) {
 // Place the quad at the instance position, rotated to face its velocity and
 // scaled by size. The stretch factor elongates along the direction of travel:
 // 1.0 is round, higher values give motion-blur streaks.
+// size MUST be isotropic in whatever space you pass it -- pixels, or world
+// units. Passing a size that already has a per-axis conversion folded in (e.g.
+// multiplied by a pixel->clip uQuadScale) rotates an anisotropically-scaled
+// corner, which shears the quad by the display aspect: 5x on a 6000x1200 wall
+// and invisible at 16:9. Convert to clip on the RESULT, not the input.
+// See issue #190; boids.js had exactly this bug.
 vec2 orientedQuadOffset(vec2 vel, vec2 size, float stretch) {
   float speed = length(vel);
   // Below a threshold the heading is noise, so keep the quad axis-aligned

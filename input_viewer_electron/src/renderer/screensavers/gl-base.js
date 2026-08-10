@@ -166,6 +166,12 @@ export function linkProgram(gl, vertexSource, fragmentSource) {
  * Create a WebGL2 runtime bound to a canvas. Returns helpers for building
  * fullscreen-quad shader programs and running an animation loop.
  *
+ * **Sizes the canvas backing store before returning** (issue #190), so a caller
+ * may derive an aspect, a particle count or a simulation grid from
+ * `canvas.width`/`canvas.height` immediately, without waiting for `start()`.
+ * Fifteen savers rely on this; it was not true before #190 and the resulting
+ * error only showed on the first saver to run after page load.
+ *
  * @param {HTMLCanvasElement} canvas
  * @returns {object} runtime
  */
@@ -205,6 +211,27 @@ export function createGLRuntime(canvas) {
     }
     gl.viewport(0, 0, canvas.width, canvas.height)
   }
+
+  // Size the backing store NOW, before returning (issue #190).
+  //
+  // Every caller that derives something from canvas dimensions --
+  // canvasAspect(), particleSide(), pointScale(), luminanceScale(), a
+  // simulation grid -- does so between createGLRuntime() and runtime.start().
+  // resize() used to run only inside start(), so those reads saw whatever the
+  // canvas was beforehand: on a canvas nothing had sized yet, the HTML default
+  // 300x150. On the 6000x1200 wall that is aspect 2.0 instead of 5.0 (world
+  // space 2.5x too narrow) and area-based particle counts computed from
+  // 45,000 px instead of 7.2M.
+  //
+  // It was intermittent, which is why it survived: the registry shares one
+  // canvas across savers, so once ANY saver had run the size stuck and the next
+  // saver's early read was correct. Only the first saver after page load was
+  // wrong -- order-dependent, invisible on a laptop, and issue #114's failure
+  // mode still live after #138 fixed it in the shaders.
+  //
+  // Four savers already carried a comment asserting this was true. Making it
+  // true is a smaller and safer change than correcting six call sites.
+  resize()
 
   /**
    * Build a fullscreen-quad program from a fragment shader body.

@@ -140,11 +140,19 @@ void main() {
 
   // Stretched along travel so the boid reads as an arrowhead with a heading,
   // not a blob. 2.5px was the old point size; the quad is sized to match.
-  vec2 size = vec2(2.5 * uScale) * uQuadScale;
-  vec2 offset = orientedQuadOffset(vel, size, 2.2);
+  //
+  // Rotate in PIXEL space, then convert to clip (issue #190). The size must
+  // stay isotropic through orientedQuadOffset: uQuadScale is the pixel->clip
+  // conversion and is therefore per-axis, so folding it in before the rotation
+  // rotates an already-anisotropically-scaled corner, which shears the quad by
+  // the display aspect -- 5x on the 6000x1200 wall, and invisible at 16:9,
+  // which is how it survived. Pixel space is isotropic on screen because world
+  // space maps to it by a uniform scale, so the heading is preserved.
+  vec2 sizePx = vec2(2.5 * uScale);
+  vec2 offsetPx = orientedQuadOffset(vel, sizePx, 2.2);
   // Positions are world space (issue #114); only this final step reintroduces
-  // the display aspect. The quad offset is already in clip units.
-  gl_Position = clipFromWorld(s.xy, uAspect) + vec4(offset, 0.0, 0.0);
+  // the display aspect, for the position and the quad offset alike.
+  gl_Position = clipFromWorld(s.xy, uAspect) + vec4(offsetPx * uQuadScale, 0.0, 0.0);
 }`
 
 const DRAW_FRAG = `#version 300 es
