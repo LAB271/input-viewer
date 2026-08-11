@@ -202,10 +202,10 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
   // issue #140; these are HDR values.
   // Same reasoning as the mask floor: the quiet regions keep a fraction of the
   // highlights, so they still glint rather than going inert.
-  float active = 0.18 + 0.82 * mask;
-  float heat = active * pow(crest, 3.0);
+  float activity = 0.18 + 0.82 * mask;
+  float heat = activity * pow(crest, 3.0);
   col += col * 2.2 * heat;
-  col += vec3(1.0, 0.92, 0.82) * spec * (0.22 + 1.4 * heat) * active;
+  col += vec3(1.0, 0.92, 0.82) * spec * (0.22 + 1.4 * heat) * activity;
 
   // Deep ambient floor, tinted the complement of the base hue so the quiet
   // regions are a colour rather than an absence of one.
