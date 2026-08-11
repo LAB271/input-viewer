@@ -32,5 +32,11 @@
 
   "weatherEnabled": false,
   "weatherLatitude": 52.37,
-  "weatherLongitude": 4.89
+  "weatherLongitude": 4.89,
+
+  "artnetEnabled": false,
+  "artnetUrl": "",
+  "artnetTarget": "all",
+  "artnetReleaseScene": "",
+  "artnetMaxBrightness": 0.8
 }

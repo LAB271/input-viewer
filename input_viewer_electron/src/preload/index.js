@@ -25,6 +25,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getSystemVolume: () => ipcRenderer.invoke('get-system-volume'),
   setSystemVolume: (volume) => ipcRenderer.invoke('set-system-volume', volume),
 
+  // Art-Net reactive mode (#59). The POST goes through the main process, not the
+  // renderer: the renderer's origin is `file://` in production, the relay has no
+  // CORS middleware, and a cross-origin JSON POST therefore never gets past the
+  // preflight. Main has no origin, so no preflight exists. It also keeps a
+  // LAN-mutating capability out of the renderer.
+  artnetSend: (request) => ipcRenderer.invoke('artnet-send', request),
+
   // Updater events
   onUpdaterProgress: (callback) => {
     ipcRenderer.on('updater-progress', (event, percent) => callback(percent))

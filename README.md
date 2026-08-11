@@ -103,6 +103,7 @@ control:
 |---|---|---|
 | Auto-update | GitHub Releases on `LAB271/labs-input-viewer` | on |
 | Weather screensaver | `api.open-meteo.com` | **off** |
+| Art-Net reactive mode | your `artnet-relay` host | **off** |
 
 The weather screensaver (issue #101) renders the current conditions for a
 configured location: precipitation falls at the observed rate, wind pushes it,
@@ -137,6 +138,49 @@ What to know before enabling it:
   the network.
 - **Telling live from stale.** The readout shows the observation's age once it is
   over 30 minutes old, so a calm evening is distinguishable from frozen data.
+
+### Art-Net reactive mode
+
+While the no-signal screen is up, the dominant colour of whatever is on the wall
+can be pushed to the room lighting through the
+[`artnet-relay`](https://github.com/LAB271) service, so screen and room idle
+together (issue #59).
+
+**Off by default, and there is no default URL** — this posts to a host on your LAN
+and physically changes the lighting. To enable it:
+
+```json
+{
+  "artnetEnabled": true,
+  "artnetUrl": "http://pi.labs:8000",
+  "artnetTarget": "all",
+  "artnetMaxBrightness": 0.8,
+  "artnetReleaseScene": ""
+}
+```
+
+- **`artnetTarget`** — `all`, `group:<name>` or `strip:<name>`, mapping to the
+  relay's `/all`, `/groups/{name}` and `/strips/{name}` endpoints.
+- **`artnetMaxBrightness`** — ceiling on how bright the room can be driven, so a
+  white screensaver cannot dazzle. `1` removes the limit.
+- **`artnetReleaseScene`** — optional. When the screensaver stops, the relay stops
+  being driven and the fixtures simply **keep their last colour**; nothing is sent
+  unless you name a scene here. That default is deliberate: a blackout would
+  plunge a room that may have people in it into darkness, and posting a scene
+  every time would fight whatever normally owns the lights.
+
+Operational notes:
+
+- **One colour per second, at most**, with a fade slightly longer than that
+  interval so consecutive sends glide rather than step.
+- **The relay has no authentication**, so the URL is the entire capability. Treat
+  it accordingly, and note the app only ever POSTs colours and (optionally) a
+  scene name — never reads from the relay.
+- **A dead relay is invisible.** Failures back off from 5 seconds to 5 minutes and
+  never surface on the wall; the screensaver is unaffected.
+- The POST is made from the **main process**, not the renderer. The renderer's
+  origin is `file://` in production and the relay sends no CORS headers, so a
+  renderer-side request never gets past the preflight.
 
 ## Development
 
