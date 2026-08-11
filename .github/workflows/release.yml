@@ -240,11 +240,13 @@ jobs:
         with:
           node-version: '24'
 
-      - name: Update VERSION and package.json
+      - name: Update VERSION, package.json and package-lock.json
         run: |
           VERSION="${{ needs.analyze.outputs.new_version }}"
           echo "$VERSION" > VERSION
           cd input_viewer_electron
+          # npm version writes the new version to package.json AND
+          # package-lock.json. Both must be committed below -- see the note there.
           npm version "$VERSION" --no-git-tag-version --allow-same-version
 
       # `main` is a protected branch, so the bump cannot be pushed to it
@@ -263,7 +265,14 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout -b "$BRANCH"
-          git add VERSION input_viewer_electron/package.json
+          # package-lock.json belongs here too. npm version bumps it alongside
+          # package.json, and leaving it unstaged silently discarded that half of
+          # the bump every release: the lock sat at 2.9.0 while package.json had
+          # reached 2.13.0. `npm ci` tolerates the mismatch, so nothing failed --
+          # which is exactly why it went unnoticed for four releases.
+          git add VERSION \
+                  input_viewer_electron/package.json \
+                  input_viewer_electron/package-lock.json
           git commit -m "chore: bump version to $VERSION"
           git push origin "$BRANCH"
 
