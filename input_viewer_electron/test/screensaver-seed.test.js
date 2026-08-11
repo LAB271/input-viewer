@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: 2025-2026 Schuberg Philis / Lab271
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { readFileSync, readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { createRng, seedFromString, seedFromClock, randomPalettePhase } from '../src/renderer/screensavers/seed.js'
 import { SCREENSAVERS, pickRandomIndex } from '../src/renderer/screensavers/registry.js'
+import { __injectReading } from '../src/renderer/screensavers/weather-source.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const SAVER_DIR = join(HERE, '..', 'src', 'renderer', 'screensavers')
@@ -183,6 +184,18 @@ describe('randomPalettePhase', () => {
 })
 
 describe('pickRandomIndex', () => {
+  // The weather saver declines to be picked until a reading exists (#101), and
+  // in the node environment there is never one. These cases are about the
+  // draw itself, so pin a reading to make the whole set available; availability
+  // has its own describe below.
+  beforeEach(() => {
+    __injectReading({
+      temperatureC: 12, precipitationMmH: 0, windSpeedKmh: 5, windDirectionDeg: 0,
+      cloudCoverPct: 50, weatherCode: 1, isDay: true
+    })
+  })
+  afterEach(() => __injectReading(null))
+
   it('never returns the avoided index', () => {
     for (let avoid = 0; avoid < SCREENSAVERS.length; avoid++) {
       for (let i = 0; i < 200; i++) {
@@ -381,6 +394,14 @@ describe('screensaver module contract', () => {
       'glyph-atlas.js',
       // Generated data for the shadercheck structure check (#156), not a saver.
       'structure-baselines.js',
+      // The weather poller (#101). Lives here because only the weather saver
+      // reads it, but it is infrastructure: it owns a network poll and a timer,
+      // has no canvas and no create(), and runs on the app's lifecycle rather
+      // than an activation's.
+      'weather-source.js',
+      // Canned readings for reviewing the weather saver (#101). Preview and
+      // tests only; nothing in the shipped app reads it.
+      'weather-states.js',
       // The no-signal display, not a rotating screensaver (#92): it is driven
       // directly by renderer.js when a feed loses signal, so it is deliberately
       // absent from SCREENSAVERS.

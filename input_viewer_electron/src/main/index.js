@@ -54,7 +54,20 @@ const defaultSettings = {
   rightDeviceId: null,
   layoutMode: 'dual',
   layoutGap: 2,
-  inputs: {} // { deviceId: { name: string, enabled: boolean } }
+  inputs: {}, // { deviceId: { name: string, enabled: boolean } }
+
+  // Weather screensaver (issue #101). OFF by default, deliberately: this is the
+  // only feature that talks to a third party unprompted, so an install that is
+  // not supposed to reach the internet stays that way until someone opts in.
+  // With it off, the saver never offers itself to the rotation at all.
+  //
+  // Coordinates are coarse on purpose -- two decimals is ~1km, far finer than
+  // any weather model's grid, and the renderer rounds again before the request
+  // leaves the process. The default is central Amsterdam, which is a placeholder
+  // rather than anybody's location.
+  weatherEnabled: false,
+  weatherLatitude: 52.37,
+  weatherLongitude: 4.89
 }
 
 // Load settings from file
