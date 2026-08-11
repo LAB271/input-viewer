@@ -28,5 +28,9 @@
   "remoteKeyboardApiKey": "",
 
   "presenterDebugEnabled": false,
-  "gpuCompositing": false
+  "gpuCompositing": false,
+
+  "weatherEnabled": false,
+  "weatherLatitude": 52.37,
+  "weatherLongitude": 4.89
 }

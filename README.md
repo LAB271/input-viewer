@@ -94,6 +94,50 @@ stable across reboots:
 [`settings.example.json`](settings.example.json) in the repo root lists every
 key with its default. It is documentation only; the app does not read it.
 
+### Weather screensaver and network access
+
+Input Viewer makes **no outbound network requests** except two, both of which you
+control:
+
+| Feature | Destination | Default |
+|---|---|---|
+| Auto-update | GitHub Releases on `LAB271/labs-input-viewer` | on |
+| Weather screensaver | `api.open-meteo.com` | **off** |
+
+The weather screensaver (issue #101) renders the current conditions for a
+configured location: precipitation falls at the observed rate, wind pushes it,
+cloud cover sets the sky, and the palette follows local day and night.
+
+It is **off by default** and stays entirely silent until you enable it — with
+`weatherEnabled: false` no request is ever made and the screensaver never appears
+in the rotation. To turn it on:
+
+```json
+{
+  "weatherEnabled": true,
+  "weatherLatitude": 52.37,
+  "weatherLongitude": 4.89
+}
+```
+
+What to know before enabling it:
+
+- **Where the data goes.** The configured coordinates are sent to Open-Meteo on
+  each poll. Open-Meteo needs no API key and no account, so there is no
+  credential to store or leak. It is free for non-commercial use under CC-BY.
+- **How coarse.** Coordinates are rounded to two decimals (~1 km) before the
+  request leaves the app. Weather models are far coarser than that, so nothing is
+  gained by configuring more precision.
+- **How often.** At most once every 15 minutes, matching how often Open-Meteo
+  updates, with exponential backoff up to an hour after repeated failures. An
+  offline wall does not keep hammering the endpoint.
+- **What happens when it fails.** Nothing visible. The last good reading keeps
+  animating; once it is more than 12 hours old the screensaver removes itself
+  from the rotation rather than showing stale weather. Activation never waits on
+  the network.
+- **Telling live from stale.** The readout shows the observation's age once it is
+  over 30 minutes old, so a calm evening is distinguishable from frozen data.
+
 ## Development
 
 ### Prerequisites

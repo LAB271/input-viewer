@@ -82,6 +82,18 @@ bit-for-bit — 7 of the 12 used to do exactly that.
 - JS-side savers use `createRng(seed)` — `range/around/int/pick/chance/sign/
   phase`. Build the RNG in `create()`, not `start()`, so choices survive a
   start/stop cycle.
+- **`isAvailable()` is optional** (#101). A saver that depends on something
+  outside itself may export it and return false to be skipped by the *random*
+  rotation. Explicit selection (preview, stepping keys, shadercheck) ignores it,
+  so such a saver must still render something defensible without its data. Only
+  `weather.js` uses it, and only until a reading is cached. This exists so
+  `startScreensaver()` can stay synchronous — an async `prepare()` awaited by the
+  registry would have made it async for every caller.
+- **Network access lives outside the saver.** `weather-source.js` owns the poll
+  and its timer; `weather.js` only reads a cached reading. The registry's failure
+  path is a `try { create(); start() } catch`, so a `fetch` rejecting after
+  `start()` returns is uncatchable there. Keeping the poll outside also means a
+  saver's `stop()` cannot leak a timer into every subsequent screensaver.
 - **Perturb, don't randomise.** These constants were tuned. Where a bound is
   load-bearing (`sep < ali` radius in boids, feed/kill regimes in
   reaction-diffusion, zoom depth vs float precision in the fractals) say so in a

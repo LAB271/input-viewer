@@ -43,6 +43,7 @@ import {
   getActiveIndex,
   screensaverCount
 } from './screensavers/registry.js'
+import { installWeatherSource } from './screensavers/weather-source.js'
 
 // Imported directly rather than through the registry: the split-flap board is
 // the no-signal display, not one of the rotating screensavers (#92).
@@ -214,7 +215,14 @@ async function saveSettings() {
         gpuCompositing: state.gpuCompositing,
         inputs: state.settings.inputs,
         initialSetupComplete: state.settings.initialSetupComplete,
-        noSignalReferences: state.settings.noSignalReferences
+        noSignalReferences: state.settings.noSignalReferences,
+        // Read from state.settings rather than state, like inputs above: these
+        // have no mirrored state.* field. They must be listed here explicitly --
+        // this object is an allowlist, so a key omitted from it is silently
+        // reset to its default on the next load.
+        weatherEnabled: state.settings.weatherEnabled,
+        weatherLatitude: state.settings.weatherLatitude,
+        weatherLongitude: state.settings.weatherLongitude
       }
       await window.electronAPI.saveSettings(settingsToSave)
     }
@@ -249,7 +257,12 @@ function getDefaultSettings() {
     remoteKeyboardApiKey: '',
     presenterDebugEnabled: false,
     // Experimental; see initGpuCompositing and issue #62.
-    gpuCompositing: false
+    gpuCompositing: false,
+    // Weather screensaver (#101). Off by default: the only feature here that
+    // reaches a third party. Mirrors defaultSettings in src/main/index.js.
+    weatherEnabled: false,
+    weatherLatitude: 52.37,
+    weatherLongitude: 4.89
   }
 }
 
@@ -2542,6 +2555,25 @@ async function init() {
 
   // Initialize screensaver registry (random screensaver chosen on activation)
   initScreensavers(elements.screensaverCanvas)
+
+  // Weather polling for the weather screensaver (#101).
+  //
+  // Deliberately owned here rather than by the saver. The registry's start path
+  // is synchronous and its failure handling is a try/catch around create()+
+  // start(), so a fetch that rejects after start() returns cannot be caught
+  // there -- a saver that polled for itself would leave a blank canvas and an
+  // unhandled rejection. Polling out here also means no-signal never waits on
+  // HTTP, and a wall that boots offline simply never offers the saver.
+  //
+  // getConfig is read at each poll rather than captured, so toggling the setting
+  // takes effect without a restart. start() is a no-op while disabled.
+  installWeatherSource({
+    getConfig: () => ({
+      enabled: Boolean(state.settings.weatherEnabled),
+      latitude: state.settings.weatherLatitude,
+      longitude: state.settings.weatherLongitude
+    })
+  }).start()
 
   // Experimental WebGPU compositing. No-op unless enabled in settings, and
   // failures leave the CSS path in place, so this cannot block startup.

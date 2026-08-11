@@ -24,6 +24,11 @@ import { getActivePostChain } from './post-fx.js'
 // wall aspect and under washout, so the preview appends it to the list and
 // drives it directly.
 import splitFlap from './split-flap.js'
+// Canned weather readings, so the weather saver's interesting states can be
+// reviewed without waiting for the weather to oblige (#101). Preview only --
+// nothing in the shipped app injects a reading.
+import { __injectReading } from './weather-source.js'
+import { WEATHER_STATES } from './weather-states.js'
 
 const EXTRAS = [splitFlap]
 
@@ -138,7 +143,8 @@ function updateMode() {
     ? `${WALL_W}x${WALL_H} (wall)`
     : `${canvas.width}x${canvas.height} (window)`
   const light = washout ? ` · washout ${Math.round(washout * 100)}%` : ''
-  modeEl.textContent = res + light + bloomLabel()
+  const wx = weatherLabel() ? ` · weather: ${weatherLabel()}` : ''
+  modeEl.textContent = res + light + wx + bloomLabel()
 }
 
 window.addEventListener('resize', () => {
@@ -240,6 +246,34 @@ function fpsLoop() {
 }
 requestAnimationFrame(fpsLoop)
 
+// =============================================================================
+// Weather states (#101)
+// =============================================================================
+// The weather saver renders whatever weather-source.js has cached, which on a
+// dev machine is usually nothing -- so it would only ever be reviewable in its
+// NO DATA fallback. A cycles through canned readings instead, covering the
+// states that matter: heavy rain, snow, fog, a night thunderstorm, and a stale
+// reading. -1 hands control back to the real poller.
+let weatherState = -1
+
+function cycleWeather() {
+  weatherState = weatherState + 1 >= WEATHER_STATES.length ? -1 : weatherState + 1
+  if (weatherState < 0) {
+    __injectReading(null)
+  } else {
+    __injectReading(WEATHER_STATES[weatherState])
+  }
+  updateMode()
+  // Restart so the eased scene state starts from the new reading rather than
+  // crossfading from the old one, which is what you want when comparing states.
+  select(current)
+}
+
+/** Label for the HUD, or null when the poller is in charge. */
+function weatherLabel() {
+  return weatherState < 0 ? null : WEATHER_STATES[weatherState].label
+}
+
 window.addEventListener('keydown', (e) => {
   switch (e.key) {
     case 'ArrowRight': select(current + 1); break
@@ -262,6 +296,7 @@ window.addEventListener('keydown', (e) => {
       select(current)
       break
     case 'l': case 'L': cycleWashout(); break
+    case 'a': case 'A': cycleWeather(); break
     // Bloom tuning, for savers that use the post chain. Threshold decides how
     // much of the image glows; intensity how strongly. Read the values off the
     // HUD and paste them into the saver once it looks right.

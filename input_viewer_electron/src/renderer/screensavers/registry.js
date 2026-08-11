@@ -48,6 +48,7 @@ import treeGrowth from './tree-growth.js'
 import physarum from './physarum.js'
 import aquarium from './aquarium.js'
 import bicycleHorizon from './bicycle-horizon.js'
+import weather from './weather.js'
 
 export const SCREENSAVERS = [
   dvdLogo,
@@ -78,7 +79,8 @@ export const SCREENSAVERS = [
   treeGrowth,
   physarum,
   aquarium,
-  bicycleHorizon
+  bicycleHorizon,
+  weather
 ]
 
 let canvasEl = null
@@ -104,7 +106,48 @@ export function listScreensavers() {
 }
 
 /**
- * Pick a random index, avoiding the previous one.
+ * Whether a saver is willing to be chosen right now.
+ *
+ * Optional part of the module contract (issue #101): a saver that depends on
+ * something outside itself can decline until it has what it needs. Only the
+ * weather saver uses it, and only until a reading is cached; every other module
+ * omits it and is always available.
+ *
+ * This exists so `startScreensaver` can stay **synchronous**. The alternative
+ * considered was an async `prepare()` the registry awaits, which would have made
+ * this function async for every caller -- renderer.js, preview.js,
+ * shadercheck.js, the stepping shortcuts -- and put an HTTP round trip in front
+ * of the first no-signal event.
+ *
+ * A throwing isAvailable() counts as unavailable rather than propagating: this
+ * runs on the no-signal path, where showing *a* screensaver matters more than
+ * surfacing a predicate's bug.
+ *
+ * @param {object} saver
+ * @returns {boolean}
+ */
+function isAvailable(saver) {
+  if (!saver || typeof saver.isAvailable !== 'function') return true
+  try {
+    return saver.isAvailable() !== false
+  } catch (err) {
+    console.error(`[Screensaver] isAvailable() threw for "${saver.name}":`, err)
+    return false
+  }
+}
+
+/** @returns {number[]} indices of savers currently willing to be chosen */
+function availableIndices() {
+  const idx = []
+  for (let i = 0; i < SCREENSAVERS.length; i++) {
+    if (isAvailable(SCREENSAVERS[i])) idx.push(i)
+  }
+  return idx
+}
+
+/**
+ * Pick a random index, avoiding the previous one and skipping any saver that is
+ * currently unavailable.
  *
  * Exported for the test suite; also used for the 'random' selector and as the
  * fallback when a name doesn't match.
@@ -116,6 +159,16 @@ export function listScreensavers() {
 export function pickRandomIndex(avoid = -1, rand = Math.random) {
   const n = SCREENSAVERS.length
   if (n <= 1) return 0
+
+  // Candidates: available, and not the previous pick. If filtering leaves
+  // nothing -- every saver unavailable, or the only available one is `avoid` --
+  // fall back to ignoring availability rather than returning nothing. A wall
+  // showing the same saver twice is a much smaller problem than a blank one.
+  const available = availableIndices()
+  const candidates = available.filter((i) => i !== avoid)
+  const pool = candidates.length ? candidates : (available.length ? available : null)
+  if (pool) return pool[Math.floor(rand() * pool.length)]
+
   // Draw from the n-1 candidates that aren't `avoid`, then shift past it.
   // Cheaper and (unlike a retry loop) guaranteed to terminate.
   const span = avoid >= 0 && avoid < n ? n - 1 : n
@@ -126,6 +179,14 @@ export function pickRandomIndex(avoid = -1, rand = Math.random) {
 
 /**
  * Resolve a selector (index, name, or undefined=random) to an index.
+ *
+ * Availability (#101) gates the **random** rotation only. An explicit index or
+ * name is honoured even for an unavailable saver, because the callers that pass
+ * one are the preview harness and the stepping shortcuts, where the point is to
+ * look at a specific saver -- silently substituting a different one there would
+ * be baffling. A saver that can be unavailable therefore still has to render
+ * something defensible without its data.
+ *
  * @param {number|string|undefined} selector
  * @returns {number}
  */
