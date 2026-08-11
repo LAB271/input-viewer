@@ -138,6 +138,11 @@ together.
 
 - **VERSION** file at repo root - source of truth for releases
 - **package.json** version - must stay in sync (auto-release handles this)
+- **package-lock.json** version - also bumped by `npm version`, and it must be
+  committed with the other two. The Release workflow staged only `VERSION` and
+  `package.json` for four releases, so the lock sat at 2.9.0 while package.json
+  had reached 2.13.0. `npm ci` tolerates that mismatch, which is why nothing
+  failed and nobody noticed.
 - Tags follow semver: `v{major}.{minor}.{patch}`
 
 ## Commit Convention
@@ -212,7 +217,8 @@ Feature Branch → PR (base: main) → CI: lint, test & build → Merge to Main
                               Runs the test suite (gates the release:
                                 version-bump needs the lint job)
                               Builds macOS + Windows
-                              Bumps VERSION + package.json, tags v*.*.*
+                              Bumps VERSION + package.json + package-lock.json,
+                                tags v*.*.*
                               Publishes installers + update metadata
                               to GitHub Releases on LAB271/labs-input-viewer
 ```
