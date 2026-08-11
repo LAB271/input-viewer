@@ -29,7 +29,8 @@
     "build:win": "npm run build && electron-builder --win --config",
     "build:unpack": "npm run build && electron-builder --dir --config",
     "publish": "npm run build && electron-builder --publish always --config",
-    "baselines": "node scripts/update-structure-baselines.mjs"
+    "baselines": "node scripts/update-structure-baselines.mjs",
+    "bench": "node scripts/bench-compositing.mjs"
   },
   "dependencies": {
     "electron-updater": "6.8.9"
