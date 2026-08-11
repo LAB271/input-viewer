@@ -42,6 +42,25 @@ if (!match) {
 const densities = JSON.parse(match[1])
 const names = Object.keys(densities).sort((a, b) => densities[b] - densities[a])
 
+// Name the unprotected savers from the data rather than in prose. Which savers
+// measure zero depends on STRUCTURE_SAMPLE_FRAMES, so a hand-written list goes
+// stale the moment that window is retuned -- it did, twice, while fixing #192.
+const zeroed = names.filter((n) => densities[n] === 0)
+const zeroNote = zeroed.length ? zeroed.join(', ') : 'none'
+const peak = Number(densities[names[0]].toFixed(2))
+
+/** Greedy wrap, so a generated list cannot blow past the file's comment width. */
+function wrap(text, width) {
+  const out = []
+  let line = ''
+  for (const word of text.split(' ')) {
+    if (line && (line + ' ' + word).length > width) { out.push(line); line = word }
+    else line = line ? `${line} ${word}` : word
+  }
+  if (line) out.push(line)
+  return out
+}
+
 const header = [
   '// SPDX-License-Identifier: Apache-2.0',
   '// SPDX-FileCopyrightText: 2025-2026 Schuberg Philis / Lab271',
@@ -57,18 +76,32 @@ const header = [
   ' * scoring exactly 0.000 while every existing pixel check passed.',
   ' *',
   ' * These cannot be replaced by one global threshold, and the spread is why:',
-  ' * some savers legitimately sit near 0.002 while others reach 0.67. Any floor',
+  ` * some savers legitimately sit near 0.002 while others reach ${peak}. Any floor`,
   ' * above the lowest healthy saver false-positives on it, and any floor below',
   ' * catches nothing. So the check is a large relative DROP from a saver\'s own',
-  ' * baseline.',
+  ' * baseline -- AND a drop of at least STRUCTURE_MIN_ABS_DROP in absolute terms.',
+  ' * Both conditions are needed: at the bottom of the range the relative band is',
+  ' * narrower than the measurement\'s own frame-to-frame noise, which is what made',
+  ' * this check fail at random before #192.',
   ' *',
-  ' * Values are the minimum across the harness seeds, measured on SwiftShader.',
+  ' * Values are the minimum across the harness seeds, and within each seed the',
+  ' * MAXIMUM across the sampled frames (#192) -- a saver that is a small sprite on',
+  ' * black has a density dominated by where the sprite happens to be, so one',
+  ' * arbitrary instant is not a measure of its health. Measured on SwiftShader.',
   ' *',
-  ' * A baseline of 0 means the saver had nothing on screen after the harness\'s',
-  ' * five frames -- true of simulations that need seconds to develop (wave tank\'s',
-  ' * first drop lands at 0.2s; falling sand has ~40 grains on a 240x135 grid by',
-  ' * then). The check skips a zero baseline, so those savers are NOT protected by',
-  ' * it. Verify them by sampling over time instead, as their commits did.',
+  ' * A baseline of 0 means the saver had nothing on screen throughout the sampled',
+  ' * window -- true of simulations that need seconds to develop. The check skips a',
+  ' * zero baseline, so such a saver is NOT protected by it; verify it by sampling',
+  ' * over time instead, as its commit did. Unprotected for that reason,',
+  ' * emitted from the measurement rather than maintained by hand (the list',
+  ' * changes whenever STRUCTURE_SAMPLE_FRAMES is retuned):',
+  ' *',
+  ...wrap(zeroNote, 74).map((l) => ` *   ${l}`),
+  ' *',
+  ' * A saver whose baseline is below STRUCTURE_MIN_ABS_DROP is likewise',
+  ' * unprotected against a total collapse -- see the limit spelled out in',
+  ' * test/structure-threshold.test.js.',
+  ' *',
   ' * Regenerate with `npm run baselines` and review the diff: a baseline that',
   ' * drops sharply is either an intended redesign or the bug this file exists',
   ' * to catch.',
