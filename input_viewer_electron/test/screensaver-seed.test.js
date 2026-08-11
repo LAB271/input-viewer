@@ -399,6 +399,10 @@ describe('screensaver module contract', () => {
       // has no canvas and no create(), and runs on the app's lifecycle rather
       // than an activation's.
       'weather-source.js',
+      // Art-Net reactive mode (#59): posts the active saver's dominant colour to
+      // the lighting relay. Infrastructure, not a saver -- no canvas, no
+      // create(), and its lifetime is the app's rather than an activation's.
+      'artnet-sync.js',
       // Canned readings for reviewing the weather saver (#101). Preview and
       // tests only; nothing in the shipped app reads it.
       'weather-states.js',

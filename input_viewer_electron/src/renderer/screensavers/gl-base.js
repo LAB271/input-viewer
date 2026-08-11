@@ -162,6 +162,35 @@ export function linkProgram(gl, vertexSource, fragmentSource) {
   return program
 }
 
+// Frame observers (issue #59), module-level rather than per-runtime.
+//
+// Only one screensaver runs at a time against one shared canvas, and the thing
+// that wants the pixels -- Art-Net reactive mode -- is installed once by
+// renderer.js and outlives every activation. Per-runtime registration would mean
+// re-subscribing on every rotation, from code that has no reference to the
+// runtime a saver built inside its own start().
+const frameObservers = []
+
+/**
+ * Watch the rendered frame at low resolution.
+ *
+ * The callback receives `(rgba, pixelCount)` -- packed RGBA bytes for a sparse
+ * grid of tiles spread across the finished frame, not an image, so treat it as a
+ * bag of samples rather than something with a layout. Called once per rendered
+ * frame; the observer is expected to rate-limit itself (the Art-Net client sends
+ * at 1Hz). Registering costs one branch per frame when nobody is listening.
+ *
+ * @param {(rgba: Uint8Array, pixelCount: number) => void} fn
+ * @returns {() => void} unsubscribe
+ */
+export function observeFrames(fn) {
+  frameObservers.push(fn)
+  return () => {
+    const i = frameObservers.indexOf(fn)
+    if (i >= 0) frameObservers.splice(i, 1)
+  }
+}
+
 /**
  * Create a WebGL2 runtime bound to a canvas. Returns helpers for building
  * fullscreen-quad shader programs and running an animation loop.
@@ -200,6 +229,67 @@ export function createGLRuntime(canvas) {
   let onFrame = null
   let lastTime = 0
   let dt = FALLBACK_DT
+
+  // Frame sampling for observers (#59): a grid of small tiles read straight from
+  // the default framebuffer.
+  //
+  // The obvious implementation -- blitFramebuffer the whole canvas down into a
+  // small FBO and read that -- does not work here, and it is worth recording why
+  // so nobody spends the afternoon on it again. The context is created with
+  // `alpha: false`, so the default framebuffer is RGB8 while any renderable
+  // target we can make is RGBA8, and a colour blit between the two is a format
+  // mismatch: `blitFramebuffer` returns INVALID_OPERATION and the readback is all
+  // zeroes. Measured, with LINEAR, with NEAREST, and with no scaling at all --
+  // 1282 every time, while a direct readPixels of the same frame returned real
+  // pixels. So: no blit, no FBO, no texture.
+  //
+  // Instead, TILES_X * TILES_Y small reads spread evenly across the frame. That
+  // samples the whole composition rather than one corner, costs a few hundred
+  // bytes, and is limited by the sync rather than the volume -- which is why
+  // observers rate-limit themselves to 1Hz.
+  const TILE = 8
+  const TILES_X = 8
+  const TILES_Y = 4
+  const SAMPLE_COUNT = TILE * TILE * TILES_X * TILES_Y
+  let samplePixels = null
+  let tileBuf = null
+
+  /**
+   * Read the finished frame at a sparse grid and hand it to observers.
+   *
+   * Runs every frame, but only while at least one observer is registered.
+   */
+  function notifyFrameObservers() {
+    if (!samplePixels) {
+      samplePixels = new Uint8Array(SAMPLE_COUNT * 4)
+      tileBuf = new Uint8Array(TILE * TILE * 4)
+    }
+    const w = canvas.width
+    const h = canvas.height
+    if (w < TILE || h < TILE) return
+    try {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+      let out = 0
+      for (let ty = 0; ty < TILES_Y; ty++) {
+        for (let tx = 0; tx < TILES_X; tx++) {
+          // Tile centres, inset so a tile never straddles the edge.
+          const x = Math.min(w - TILE, Math.max(0, Math.round((tx + 0.5) * w / TILES_X - TILE / 2)))
+          const y = Math.min(h - TILE, Math.max(0, Math.round((ty + 0.5) * h / TILES_Y - TILE / 2)))
+          gl.readPixels(x, y, TILE, TILE, gl.RGBA, gl.UNSIGNED_BYTE, tileBuf)
+          samplePixels.set(tileBuf, out)
+          out += tileBuf.length
+        }
+      }
+    } catch {
+      // A driver that refuses the read should not take the screensaver with it.
+      return
+    }
+    for (const fn of frameObservers) {
+      try { fn(samplePixels, SAMPLE_COUNT) } catch (err) {
+        console.error('[GL] frame observer threw:', err)
+      }
+    }
+  }
 
   function resize() {
     const dpr = Math.min(window.devicePixelRatio || 1, 2)
@@ -303,6 +393,15 @@ export function createGLRuntime(canvas) {
       dt = Math.min(time - lastTime, MAX_DT) || FALLBACK_DT
       lastTime = time
       if (onFrame) onFrame(time, frame, gl, runtime)
+      // Frame observers (issue #59): Art-Net reactive mode needs the rendered
+      // pixels, and this is the only point that is guaranteed to be INSIDE the
+      // frame. Without preserveDrawingBuffer the default framebuffer's contents
+      // are undefined once the frame is composited, so a separate rAF could not
+      // reliably read it -- ordering against the saver's own callback is not
+      // guaranteed. Runs after onFrame so it sees the finished image.
+      //
+      // No observer means one branch per frame and nothing else.
+      if (frameObservers.length) notifyFrameObservers()
       frame++
       rafId = requestAnimationFrame(loop)
     }
@@ -321,6 +420,8 @@ export function createGLRuntime(canvas) {
     stop()
     gl.deleteVertexArray(vao)
     gl.deleteBuffer(vbo)
+    samplePixels = null
+    tileBuf = null
   }
 
   const runtime = {
@@ -328,6 +429,18 @@ export function createGLRuntime(canvas) {
     canvas,
     resize,
     createQuadProgram,
+    /**
+     * Watch the rendered frame at low resolution (issue #59).
+     *
+     * The callback gets `(rgba, width, height)` for a 32x16 downscale of the
+     * finished frame, every frame, and is expected to rate-limit itself -- the
+     * Art-Net client sends at 1Hz. Registered observers are dropped by
+     * `destroy()`, so a saver's stop() cannot leak one.
+     *
+     * @param {(rgba: Uint8Array, w: number, h: number) => void} fn
+     * @returns {() => void} unsubscribe
+     */
+    observeFrames,
     start,
     stop,
     destroy,

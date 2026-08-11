@@ -94,6 +94,19 @@ bit-for-bit — 7 of the 12 used to do exactly that.
   path is a `try { create(); start() } catch`, so a `fetch` rejecting after
   `start()` returns is uncatchable there. Keeping the poll outside also means a
   saver's `stop()` cannot leak a timer into every subsequent screensaver.
+- **`observeFrames()` in gl-base** hands the rendered frame to a watcher once per
+  frame, for Art-Net reactive mode (#59). It reads a sparse grid of small tiles
+  straight from the default framebuffer — **not** a `blitFramebuffer` downscale.
+  The context is created `alpha: false`, so the default framebuffer is RGB8 while
+  any renderable target is RGBA8, and that colour blit is a format mismatch:
+  measured INVALID_OPERATION with LINEAR, NEAREST and no scaling alike, giving an
+  all-zero readback. Observers must rate-limit themselves; readback is a pipeline
+  stall.
+- **Outbound POSTs go through the main process** (`artnet-send` over IPC), not
+  renderer `fetch`. In production the renderer is `file://`, so it has no origin,
+  and `artnet-relay` sends no CORS headers — a renderer-side POST never gets past
+  the preflight. The weather GET is fine in the renderer only because Open-Meteo
+  sends permissive CORS.
 - **Perturb, don't randomise.** These constants were tuned. Where a bound is
   load-bearing (`sep < ali` radius in boids, feed/kill regimes in
   reaction-diffusion, zoom depth vs float precision in the fractals) say so in a

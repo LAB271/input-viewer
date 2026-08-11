@@ -44,6 +44,8 @@ import {
   screensaverCount
 } from './screensavers/registry.js'
 import { installWeatherSource } from './screensavers/weather-source.js'
+import { installArtnetSync, getArtnetSync } from './screensavers/artnet-sync.js'
+import { observeFrames } from './screensavers/gl-base.js'
 
 // Imported directly rather than through the registry: the split-flap board is
 // the no-signal display, not one of the rotating screensavers (#92).
@@ -222,7 +224,12 @@ async function saveSettings() {
         // reset to its default on the next load.
         weatherEnabled: state.settings.weatherEnabled,
         weatherLatitude: state.settings.weatherLatitude,
-        weatherLongitude: state.settings.weatherLongitude
+        weatherLongitude: state.settings.weatherLongitude,
+        artnetEnabled: state.settings.artnetEnabled,
+        artnetUrl: state.settings.artnetUrl,
+        artnetTarget: state.settings.artnetTarget,
+        artnetReleaseScene: state.settings.artnetReleaseScene,
+        artnetMaxBrightness: state.settings.artnetMaxBrightness
       }
       await window.electronAPI.saveSettings(settingsToSave)
     }
@@ -262,7 +269,13 @@ function getDefaultSettings() {
     // reaches a third party. Mirrors defaultSettings in src/main/index.js.
     weatherEnabled: false,
     weatherLatitude: 52.37,
-    weatherLongitude: 4.89
+    weatherLongitude: 4.89,
+    // Art-Net reactive mode (#59). Off, and with no URL, by default.
+    artnetEnabled: false,
+    artnetUrl: '',
+    artnetTarget: 'all',
+    artnetReleaseScene: '',
+    artnetMaxBrightness: 0.8
   }
 }
 
@@ -918,6 +931,12 @@ function hideDvdScreensaver() {
   stopScreensaverRotation()
   stopScreensaver()
   elements.dvdOverlay.classList.add('hidden')
+  // Stop driving the room lighting (#59). By default this sends nothing at all:
+  // the fixtures keep their last colour, so a room with people in it does not
+  // suddenly go dark and whatever normally owns the lights takes over on its
+  // next command. A scene is posted only if artnetReleaseScene is configured.
+  const artnet = getArtnetSync()
+  if (artnet) artnet.release()
   console.log('[Screensaver] Deactivated')
 }
 
@@ -2574,6 +2593,24 @@ async function init() {
       longitude: state.settings.weatherLongitude
     })
   }).start()
+
+  // Art-Net reactive mode (#59): drive the room lighting from whatever the
+  // screensaver is showing.
+  //
+  // Registered once, for the app's lifetime, rather than per activation: the
+  // observer is a no-op while disabled, and gl-base only pays for the readback
+  // when at least one observer exists. offerFrame() owns its own rate limiting
+  // (1Hz) and backoff, so this callback stays a single call per frame.
+  const artnet = installArtnetSync({
+    getConfig: () => ({
+      enabled: Boolean(state.settings.artnetEnabled),
+      url: state.settings.artnetUrl,
+      target: state.settings.artnetTarget,
+      releaseScene: state.settings.artnetReleaseScene,
+      maxBrightness: state.settings.artnetMaxBrightness
+    })
+  })
+  observeFrames((rgba) => artnet.offerFrame(rgba))
 
   // Experimental WebGPU compositing. No-op unless enabled in settings, and
   // failures leave the CSS path in place, so this cannot block startup.

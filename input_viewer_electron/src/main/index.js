@@ -67,7 +67,23 @@ const defaultSettings = {
   // rather than anybody's location.
   weatherEnabled: false,
   weatherLatitude: 52.37,
-  weatherLongitude: 4.89
+  weatherLongitude: 4.89,
+
+  // Art-Net reactive mode (issue #59): drive the room lighting from the active
+  // screensaver's dominant colour. OFF by default and with no default URL --
+  // this posts to a host on the LAN and physically changes the lighting, and
+  // the relay has no authentication, so the URL is the entire capability.
+  // Guessing a default would be guessing about somebody's network.
+  //
+  // artnetTarget: 'all' | 'group:<name>' | 'strip:<name>'
+  // artnetReleaseScene: posted when the screensaver stops; unset means the
+  //   fixtures simply keep their last colour, which is what you want in a room
+  //   that may have people standing in it.
+  artnetEnabled: false,
+  artnetUrl: '',
+  artnetTarget: 'all',
+  artnetReleaseScene: '',
+  artnetMaxBrightness: 0.8
 }
 
 // Load settings from file
@@ -259,6 +275,52 @@ ipcMain.handle('diag-log-reset', () => {
   const file = diagLogPath()
   try { fs.writeFileSync(file, '') } catch { /* first run */ }
   return file
+})
+
+// Art-Net reactive mode (issue #59).
+//
+// The POST lives here rather than in the renderer for two reasons. In production
+// the renderer is loaded with loadFile(), so its origin is `file://` -- a
+// cross-origin POST with a JSON content type triggers a CORS preflight, and the
+// artnet-relay service has no CORS middleware, so the request never happens.
+// Verified against a stub: the relay sees OPTIONS and nothing else. The main
+// process has no origin and so no preflight.
+//
+// It also keeps a capability that mutates LAN state out of the renderer.
+//
+// The renderer owns rate limiting and backoff; this is a dumb pipe that reports
+// success or failure. It deliberately does not retry -- the caller decides when
+// to try again.
+const ARTNET_TIMEOUT_MS = 2000
+
+ipcMain.handle('artnet-send', async (event, request) => {
+  const { url, body } = request || {}
+  // Only http/https to a real host. A bad settings value should fail here rather
+  // than reach fetch(): file:// or a data: URL is never a lighting relay.
+  let parsed
+  try {
+    parsed = new URL(String(url))
+  } catch {
+    return { ok: false, error: 'invalid url' }
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return { ok: false, error: `refusing protocol ${parsed.protocol}` }
+  }
+
+  try {
+    const res = await fetch(parsed.toString(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body ?? {}),
+      signal: AbortSignal.timeout(ARTNET_TIMEOUT_MS)
+    })
+    if (!res.ok) return { ok: false, error: `HTTP ${res.status}` }
+    return { ok: true }
+  } catch (err) {
+    // Never throws back across IPC: a dead relay must not surface as a rejected
+    // invoke() inside the screensaver's frame loop.
+    return { ok: false, error: err && err.message ? err.message : String(err) }
+  }
 })
 
 ipcMain.handle('toggle-fullscreen', () => {
