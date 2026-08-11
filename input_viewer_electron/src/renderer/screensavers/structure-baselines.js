@@ -12,50 +12,64 @@
  * scoring exactly 0.000 while every existing pixel check passed.
  *
  * These cannot be replaced by one global threshold, and the spread is why:
- * some savers legitimately sit near 0.002 while others reach 0.67. Any floor
+ * some savers legitimately sit near 0.002 while others reach 0.85. Any floor
  * above the lowest healthy saver false-positives on it, and any floor below
  * catches nothing. So the check is a large relative DROP from a saver's own
- * baseline.
+ * baseline -- AND a drop of at least STRUCTURE_MIN_ABS_DROP in absolute terms.
+ * Both conditions are needed: at the bottom of the range the relative band is
+ * narrower than the measurement's own frame-to-frame noise, which is what made
+ * this check fail at random before #192.
  *
- * Values are the minimum across the harness seeds, measured on SwiftShader.
+ * Values are the minimum across the harness seeds, and within each seed the
+ * MAXIMUM across the sampled frames (#192) -- a saver that is a small sprite on
+ * black has a density dominated by where the sprite happens to be, so one
+ * arbitrary instant is not a measure of its health. Measured on SwiftShader.
  *
- * A baseline of 0 means the saver had nothing on screen after the harness's
- * five frames -- true of simulations that need seconds to develop (wave tank's
- * first drop lands at 0.2s; falling sand has ~40 grains on a 240x135 grid by
- * then). The check skips a zero baseline, so those savers are NOT protected by
- * it. Verify them by sampling over time instead, as their commits did.
+ * A baseline of 0 means the saver had nothing on screen throughout the sampled
+ * window -- true of simulations that need seconds to develop. The check skips a
+ * zero baseline, so such a saver is NOT protected by it; verify it by sampling
+ * over time instead, as its commit did. Unprotected for that reason,
+ * emitted from the measurement rather than maintained by hand (the list
+ * changes whenever STRUCTURE_SAMPLE_FRAMES is retuned):
+ *
+ *   Wave Tank, Tree Growth
+ *
+ * A saver whose baseline is below STRUCTURE_MIN_ABS_DROP is likewise
+ * unprotected against a total collapse -- see the limit spelled out in
+ * test/structure-threshold.test.js.
+ *
  * Regenerate with `npm run baselines` and review the diff: a baseline that
  * drops sharply is either an intended redesign or the bug this file exists
  * to catch.
  */
 export const STRUCTURE_BASELINES = {
-  "Boids": 0.6595,
-  "White Particles": 0.4867,
-  "Particle Swarm": 0.4762,
-  "Moire Interference": 0.3014,
-  "Raymarch Fractal": 0.2727,
-  "Plasma": 0.1707,
-  "Game of Life": 0.1223,
-  "Truchet Tiles": 0.0956,
-  "Flow Field": 0.0857,
-  "Aquarium": 0.085,
-  "Bicycle Horizon": 0.0616,
-  "Matrix Rain": 0.0427,
+  "Boids": 0.8504,
+  "Particle Swarm": 0.6037,
+  "White Particles": 0.485,
+  "Moire Interference": 0.3046,
+  "Raymarch Fractal": 0.2874,
+  "Plasma": 0.1704,
+  "Game of Life": 0.1624,
+  "Frost": 0.1029,
+  "Truchet Tiles": 0.0957,
+  "Aquarium": 0.0955,
+  "Flow Field": 0.0872,
+  "Bicycle Horizon": 0.0667,
+  "Matrix Rain": 0.0474,
   "Voronoi": 0.0341,
-  "Strange Attractor": 0.0286,
-  "Frost": 0.0251,
-  "Physarum": 0.0212,
-  "Reaction Diffusion": 0.0148,
-  "Metaballs": 0.0125,
-  "ASCII Doughnut": 0.0117,
+  "Strange Attractor": 0.0285,
+  "Physarum": 0.0229,
+  "Reaction Diffusion": 0.0149,
+  "ASCII Doughnut": 0.0124,
+  "Metaballs": 0.0121,
   "Pong": 0.0077,
   "Burning Ship": 0.0039,
-  "DVD Logo": 0.0028,
-  "Double Pendulum": 0.0028,
-  "Julia Set": 0.0026,
-  "Mandelbrot": 0.0019,
-  "Falling Sand": 0.0016,
-  "Starfield Warp": 0.0008,
+  "Falling Sand": 0.0036,
+  "Double Pendulum": 0.0033,
+  "Julia Set": 0.0028,
+  "DVD Logo": 0.0026,
+  "Mandelbrot": 0.002,
+  "Starfield Warp": 0.0011,
   "Wave Tank": 0,
   "Tree Growth": 0,
 }

@@ -95,11 +95,52 @@ const MIN_LIT_PIXELS = 1
 //
 // So the baseline is per saver, recorded from a healthy run, and the check is
 // for a large RELATIVE drop rather than an absolute value. Regenerate with
-// `npm run shadercheck -- --update-baselines` after a deliberate visual change.
+// `npm run baselines` after a deliberate visual change.
 // How far below its baseline a saver may drift before failing. Generous,
 // because these are stochastic: a different seed genuinely moves the number.
 // The failure being guarded is a collapse to near-zero, not a wobble.
 const STRUCTURE_DROP_TOLERANCE = 0.35
+
+// Frame counts at which the density is sampled; the check uses the MAX (#192).
+//
+// A single reading at frame 5 made this check fail nondeterministically. Two
+// consecutive runs on an unchanged tree gave DVD Logo 0.001695 (below its floor,
+// FAIL) and 0.002765 (at its baseline, pass). The cause is not drift: a saver
+// that is a small sprite on a large black field has an edge density dominated by
+// WHERE the sprite happens to be, and at frame 5 that is a function of real
+// elapsed wall-clock time under SwiftShader. The measurement is bimodal.
+//
+// Sampling a window and taking the max asks the question the check actually
+// cares about -- "does this saver put structure on screen at all" -- instead of
+// "was there structure at one arbitrary instant". Measured over the window,
+// DVD Logo reaches 0.0057 and Julia Set 0.0099, against single-sample readings
+// of 0.0025 and 0.0026.
+//
+// Kept deliberately short. Rendering dominates the suite's runtime -- 145 runs
+// at SwiftShader's ~10fps -- so the window length sets the wall-clock cost
+// roughly linearly. This window measured 120s per run over ten consecutive
+// runs, against about 90s for the single frame-5 sample it replaces. Sampling
+// further out (frame 20, frame 80) is more stable still but costs
+// proportionally more and caught no additional failures on this set.
+//
+// Do not shrink this to one entry: a single reading is the bug in #192.
+const STRUCTURE_SAMPLE_FRAMES = [5, 12]
+
+// Smallest absolute drop below baseline that counts as a collapse.
+//
+// The relative test alone cannot work at the bottom of the range. A saver whose
+// healthy density is 0.002 has frame-to-frame noise wider than the 35% band, so
+// the band is measuring noise rather than health -- which is precisely how the
+// flake in #192 arose. Requiring the drop to be absolutely meaningful as well as
+// relatively large makes that limit explicit instead of asserting a precision
+// the measurement does not have.
+//
+// 0.0015 is chosen so a total collapse is still caught for every saver in the
+// set: the lowest non-zero baseline is Starfield Warp at 0.0008 -- below this
+// margin, and so already unprotected either way -- while Mandelbrot at 0.0019
+// going to 0 is a drop of 0.0019 and still fails. What it deliberately stops
+// catching is DVD Logo wobbling from 0.0028 to 0.0017, a drop of 0.0011.
+const STRUCTURE_MIN_ABS_DROP = 0.0015
 
 /**
  * Read back the rendered frame and report NaN, negative and blown-out pixels.
@@ -185,10 +226,16 @@ function pixelProblem(s, name) {
   const baseline = STRUCTURE_BASELINES[name]
   if (typeof baseline === 'number' && baseline > 0) {
     const floor = baseline * (1 - STRUCTURE_DROP_TOLERANCE)
-    if (s.edgeDensity < floor) {
+    // Both conditions, not either (#192). The relative test says "this is a big
+    // fraction of what it should be"; the absolute one says "and the difference
+    // is larger than this measurement's own noise". At the bottom of the range
+    // only the pair is meaningful -- see STRUCTURE_MIN_ABS_DROP.
+    const drop = baseline - s.edgeDensity
+    if (s.edgeDensity < floor && drop > STRUCTURE_MIN_ABS_DROP) {
       return `structure collapsed: edge density ${s.edgeDensity.toFixed(4)} is below ` +
-        `${floor.toFixed(4)} (baseline ${baseline}). The frame renders but has lost its ` +
-        'detail -- a flattened display pass or a broken simulation.'
+        `${floor.toFixed(4)} (baseline ${baseline}, drop ${drop.toFixed(4)}). The frame ` +
+        'renders but has lost its detail -- a flattened display pass or a broken ' +
+        'simulation.'
     }
   }
   return null
@@ -212,11 +259,28 @@ async function run() {
       try {
         instance = saver.create(canvas, seed)
         instance.start()
-        // 5 frames: enough for lazy program creation and for simulation savers
-        // to have run their sim pass at least once.
-        await frames(5)
+        // Sample a window rather than one instant, and keep the frame with the
+        // most structure (#192). The first sample is at frame 5 -- enough for
+        // lazy program creation and for a simulation saver to have run its sim
+        // pass at least once -- so the other checks see the same frame they
+        // always did; only the structure figure benefits from the window.
+        //
         // Inspect before stop(), while the context and post chain still exist.
-        pixels = inspectPixels(canvas.getContext('webgl2'), getActivePostChain())
+        let waited = 0
+        for (const at of STRUCTURE_SAMPLE_FRAMES) {
+          await frames(at - waited)
+          waited = at
+          const sample = inspectPixels(canvas.getContext('webgl2'), getActivePostChain())
+          if (!sample) continue
+          // Keep the first sample as the basis for the NaN/blown/lit checks, and
+          // raise only its edge density. Those checks want a real frame; taking
+          // a per-field max across frames would invent a frame that never
+          // existed and could mask a fault that appears in one of them.
+          if (!pixels) pixels = sample
+          else if (sample.edgeDensity > pixels.edgeDensity) {
+            pixels = { ...pixels, edgeDensity: sample.edgeDensity }
+          }
+        }
       } catch (err) {
         error = err && err.message ? err.message : String(err)
       }
