@@ -28,6 +28,44 @@ Merged to `main` but not yet released. The screensaver set now numbers 30.
 Weather and Art-Net are both **off by default** and make no network requests until
 configured. See the README for what each sends and where.
 
+#### Changed
+
+- **Eleven screensavers rewritten for the videowall.** Each was redesigned for
+  6000×1200 seen across a lit room, rather than tuned:
+  - **Plasma** — detail moved out of chroma and into luminance, then lit as a
+    heightfield from the analytic fBm gradient. Replaces a wall of undifferentiated
+    purple with no large-scale variation
+  - **Raymarch Fractal** — penumbra-tracking soft shadows, ambient occlusion, a real
+    environment used as both background and IBL source, orbit-trap colouring, and
+    temporal accumulation that removes the crawling silhouette
+  - **Mandelbrot** — a genuinely unbounded dive by perturbation theory, instead of
+    stopping where double precision runs out
+  - **Reaction Diffusion** — lit as a relief rather than colour-mapped. Base hue now
+    comes from a curated set, so the palette can no longer land on gold or amber
+  - **Voronoi** — lit facets, cell count scaled to canvas area, and a bounded value
+    range feeding the palette
+  - **Metaballs** — a lit, refracting fluid on a Newton-solved 3D isosurface with
+    Beer–Lambert interior depth. Replaces concentric rainbow rings on a brown field
+  - **Matrix Rain** — real glyphs from the shared atlas across three parallax planes
+    on true black. Replaces independently-hashed dot matrices, which were noise
+    rather than characters
+  - **Starfield Warp** — hundreds of instanced stars with blackbody colour and a
+    clear vanishing point, replacing roughly thirty white dashes on flat navy
+  - **Pong** — the court letterboxed into a CRT cabinet with a real phosphor
+    accumulation buffer. Previously the paddles sat 5460px apart with an empty middle
+  - **Truchet Tiles** — multi-scale woven bundles with continuous per-path colour and
+    a retiling front that sweeps the wall. Tiles retile by rotating a quarter turn,
+    untying and retying as they go
+  - **Moiré Interference** — fringes computed analytically from the difference term of
+    the grating product, rather than left to emerge from sampling. The look no longer
+    depends on pixel pitch, so it is identical on a laptop and on the wall
+- `shadercheck` structure baselines updated for six of those savers. Five moved
+  **down** and one **up**: the check counts spatial high-frequency content rather than
+  structure, so the old values were partly inflated by the very noise these rewrites
+  removed. Plasma now sits below the absolute margin and has lost effective coverage;
+  Truchet had been carrying a baseline four times below its real density, so a large
+  regression there would have passed silently. See #192
+
 #### Fixed
 
 - `createGLRuntime()` did not size the canvas, while 15 screensavers derived an
