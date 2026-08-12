@@ -35,6 +35,19 @@ function constant(name) {
 
 const TOLERANCE = constant('STRUCTURE_DROP_TOLERANCE')
 const MIN_ABS_DROP = constant('STRUCTURE_MIN_ABS_DROP')
+const UNIFORM_SPREAD_MIN = constant('UNIFORM_SPREAD_MIN')
+
+/**
+ * Transcription of the uniformity rule (#227). True means "report a failure".
+ *
+ * Deliberately independent of the baseline value, only of whether there is one:
+ * the whole point is to protect savers the edge-density rule cannot reach because
+ * their baseline sits below MIN_ABS_DROP.
+ */
+function uniform (baseline, spread) {
+  if (!(baseline > 0)) return false
+  return spread < UNIFORM_SPREAD_MIN
+}
 
 /** Transcription of the rule in pixelProblem(). True means "report a failure". */
 function collapsed(baseline, density) {
@@ -166,5 +179,58 @@ describe('the baselines file stays maintainable by hand', () => {
     for (const [name, b] of Object.entries(STRUCTURE_BASELINES)) {
       expect(Number(b.toFixed(4)), `${name} carries more than 4 decimals`).toBe(b)
     }
+  })
+})
+
+describe('the uniformity rule (#227)', () => {
+  it('pins the threshold', () => {
+    // Measured across all 30 savers: the lowest p99.9-p05 belonging to a saver
+    // with a non-zero baseline is Julia Set at 0.1004, so this leaves a 5x
+    // margin. Raising it past ~0.10 would start failing healthy savers.
+    expect(UNIFORM_SPREAD_MIN).toBe(0.02)
+    expect(UNIFORM_SPREAD_MIN).toBeLessThan(0.1004 / 2)
+  })
+
+  it('catches a uniform frame for every saver the edge-density rule cannot', () => {
+    // These are the savers whose baseline is under the absolute margin, so a drop
+    // to zero edge density is smaller than MIN_ABS_DROP and the rule above stays
+    // silent. Before #227 they had no protection at all.
+    const subMargin = Object.entries(STRUCTURE_BASELINES)
+      .filter(([, b]) => b > 0 && b <= MIN_ABS_DROP)
+    expect(subMargin.length).toBeGreaterThan(0)
+    for (const [name, baseline] of subMargin) {
+      expect(collapsed(baseline, 0), `${name}: edge density rule is blind here`).toBe(false)
+      expect(uniform(baseline, 0), `${name}: uniformity rule must catch it`).toBe(true)
+    }
+  })
+
+  it('catches a flat frame for every saver with a real baseline', () => {
+    for (const [name, baseline] of Object.entries(STRUCTURE_BASELINES)) {
+      if (!(baseline > 0)) continue
+      expect(uniform(baseline, 0), `${name} going flat`).toBe(true)
+    }
+  })
+
+  it('exempts the savers that legitimately start blank', () => {
+    // Wave Tank and Tree Growth carry a zero baseline because they need seconds
+    // to develop, and they are the only two whose measured spread is also zero.
+    // Gating on baseline > 0 is what keeps them from failing every run.
+    const zeroBaseline = Object.entries(STRUCTURE_BASELINES).filter(([, b]) => b === 0)
+    expect(zeroBaseline.length).toBeGreaterThan(0)
+    for (const [name, baseline] of zeroBaseline) {
+      expect(uniform(baseline, 0), `${name} is exempt by design`).toBe(false)
+    }
+  })
+
+  it('does not fire on the smallest healthy spread measured', () => {
+    // Julia Set, the minimum across the set. If this ever fails, the threshold has
+    // been raised past what real savers produce.
+    expect(uniform(0.0994, 0.1004)).toBe(false)
+  })
+
+  it('is silent on a smooth but varied frame, which is a valid picture', () => {
+    // Plasma is the case in point: almost no edges (baseline 0.0001) and a
+    // perfectly good image. Low edge density must not imply uniform.
+    expect(uniform(0.0001, 0.1259)).toBe(false)
   })
 })
