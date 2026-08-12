@@ -41,29 +41,42 @@
  * Regenerate with `npm run baselines` and review the diff: a baseline that
  * drops sharply is either an intended redesign or the bug this file exists
  * to catch.
+ *
+ * "Do not hand-edit" above has one deliberate exception, learned the hard way
+ * across the eleven screensaver rewrites in #210 and #214..#220. When ONE saver
+ * is redesigned and its density legitimately moves, edit ONLY that saver's line
+ * by hand. Running `npm run baselines` rewrites all 30 entries from a single
+ * fresh measurement, which (a) buries the intended change among 29 lines of
+ * run-to-run noise, and (b) conflicts with every other open PR that touched this
+ * file. Six of those eleven had to change a baseline, and regenerating would have
+ * made them mutually unmergeable.
+ *
+ * Keep entries in descending value order when hand-editing, because the
+ * generator emits them that way. Six hand-edits during that batch left the file
+ * unsorted, so the next regeneration would have produced a large reordering diff
+ * tangled up with somebody's real change.
  */
 export const STRUCTURE_BASELINES = {
   "Boids": 0.8504,
   "Particle Swarm": 0.6037,
   "White Particles": 0.485,
+  "Truchet Tiles": 0.39,
   "Moire Interference": 0.19,
-  "Raymarch Fractal": 0.0081,
-  "Plasma": 0.0001,
   "Game of Life": 0.1624,
   "Frost": 0.1029,
-  "Truchet Tiles": 0.39,
   "Aquarium": 0.0955,
   "Flow Field": 0.0872,
   "Bicycle Horizon": 0.0667,
-  "Matrix Rain": 0.009,
   "Voronoi": 0.0341,
   "Strange Attractor": 0.0285,
   "Physarum": 0.0229,
   "Weather": 0.0164,
   "Reaction Diffusion": 0.0149,
   "ASCII Doughnut": 0.0124,
-  "Metaballs": 0.0049,
+  "Matrix Rain": 0.009,
+  "Raymarch Fractal": 0.0081,
   "Pong": 0.0077,
+  "Metaballs": 0.0049,
   "Burning Ship": 0.0039,
   "Falling Sand": 0.0036,
   "Double Pendulum": 0.0033,
@@ -71,6 +84,7 @@ export const STRUCTURE_BASELINES = {
   "DVD Logo": 0.0026,
   "Mandelbrot": 0.002,
   "Starfield Warp": 0.0011,
+  "Plasma": 0.0001,
   "Wave Tank": 0,
   "Tree Growth": 0,
 }

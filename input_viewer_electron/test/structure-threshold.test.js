@@ -133,3 +133,38 @@ describe('the honest limit of the check', () => {
     expect(unprotected.length).toBeLessThanOrEqual(3)
   })
 })
+
+describe('the baselines file stays maintainable by hand', () => {
+  // scripts/update-structure-baselines.mjs emits entries in descending density
+  // order. Hand-editing a single line is the correct move when one saver is
+  // deliberately redesigned -- regenerating rewrites all 30 entries from one fresh
+  // measurement, burying the intended change in run-to-run noise and conflicting
+  // with every other PR touching the file.
+  //
+  // The cost is that hand-edits can leave the file unsorted, and that is exactly
+  // what happened across #210 and #214..#220: six baselines moved, and afterwards
+  // the file read 0.19, 0.0081, 0.0001, 0.1624, 0.1029, 0.39. Nothing failed,
+  // because nothing checked -- so the next `npm run baselines` would have produced
+  // a large reordering diff tangled up with somebody's real change. This is that
+  // check.
+  it('is sorted by descending density, as the generator emits it', () => {
+    const values = Object.values(STRUCTURE_BASELINES)
+    for (let i = 1; i < values.length; i++) {
+      const names = Object.keys(STRUCTURE_BASELINES)
+      expect(
+        values[i] <= values[i - 1],
+        `"${names[i]}" (${values[i]}) sits after "${names[i - 1]}" (${values[i - 1]}). `
+        + 'Hand-edited baselines must keep descending order -- see the file header.'
+      ).toBe(true)
+    }
+  })
+
+  it('rounds to the four decimals the generator writes', () => {
+    // A hand-edit of 0.00485 would be silently rounded to 0.0049 by the next
+    // regeneration, so the file and the generator would disagree about the value
+    // without anyone changing it.
+    for (const [name, b] of Object.entries(STRUCTURE_BASELINES)) {
+      expect(Number(b.toFixed(4)), `${name} carries more than 4 decimals`).toBe(b)
+    }
+  })
+})
