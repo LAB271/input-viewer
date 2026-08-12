@@ -62,7 +62,7 @@ export const STRUCTURE_BASELINES = {
   "Weather": 0.0164,
   "Reaction Diffusion": 0.0149,
   "ASCII Doughnut": 0.0124,
-  "Metaballs": 0.0121,
+  "Metaballs": 0.0049,
   "Pong": 0.0077,
   "Burning Ship": 0.0039,
   "Falling Sand": 0.0036,
