@@ -41,13 +41,47 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
   float fscale = 1.6 + iSeed.z * 0.9;
   vec2 p = uv * 2.0 + fieldOffset;
   float bright = 0.0;
-  // Integrate the streamline backwards a few steps.
-  for (int i = 0; i < 40; i++) {
-    vec2 v = flow(p * fscale, t);
-    p -= v * 0.012;
+  // Integrate the streamline backwards along a fixed ARC of the flow, in STEPS
+  // samples.
+  //
+  // WHY STEPS IS 16 AND NOT 40
+  //
+  // Each sample costs four snoise calls, because curl2d() takes the curl by
+  // central differences. At 40 steps that is 160 noise evaluations per pixel --
+  // about 1.2 billion per frame at 6000x1200 -- and this saver measured 15.6 fps
+  // there, the slowest of all thirty (#225).
+  //
+  // ARC is held at the original 40 x 0.012, so the streamline traced is exactly
+  // the same length through exactly the same field; it is integrated more
+  // coarsely, not shortened. The brightness weight is ARC/STEPS for the same
+  // reason, so accumulated brightness is unchanged and the streak curve and bloom
+  // threshold below stay valid without retuning.
+  //
+  // A cheaper flow() was tried first and rejected. snoised() in the shared
+  // library returns a value and its exact analytic gradient in one call, and the
+  // curl of a scalar potential is that gradient rotated a quarter turn -- one
+  // evaluation instead of four. It reached 40 fps, but it is the curl of a single
+  // 3D potential, whereas curl2d samples its two components in decorrelated
+  // planes slid along different axes. That is not the same field: the streamlines
+  // and the speed distribution both change, and the frame lost its blacks (p05
+  // 0.078 against 0.008, 8.9% of the frame below 0.15 against 36.6%). Recovering
+  // the floor by retuning the speed ramp got p05 and the median back but not the
+  // deep shadow, and the image still read as marbling rather than filaments on
+  // black. #119 asks for this saver to get cheaper, NOT to be restyled, so the
+  // field stays exactly as it was and only the sample count moves.
+  const int STEPS = 16;
+  const float ARC = 0.48;
+  const float STEP = ARC / float(STEPS);
+  // Carried out of the loop for the hue below, which used to spend a 17th flow()
+  // call -- four more noise evaluations -- on a value the last iteration had
+  // already computed.
+  vec2 v = vec2(0.0);
+  for (int i = 0; i < STEPS; i++) {
+    v = flow(p * fscale, t);
+    p -= v * STEP;
     // Brightness from how aligned the local flow is + a moving phase.
     float speed = length(v);
-    bright += 0.012 * smoothstep(0.0, 1.5, speed);
+    bright += STEP * smoothstep(0.0, 1.5, speed);
   }
 
   // Streak intensity. The exponent controls how much of the frame is lit and
@@ -76,8 +110,8 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
   // improvement rather than a complete cure -- a saver authored against the
   // chain from the start would spend fewer pixels in the mid-tones.
   float streak = pow(bright, 4.0) * 26.0;
-  // Hue cycles along the flow direction and time.
-  vec2 vdir = flow(p * fscale, t);
+  // Hue cycles along the flow direction and time, reusing the last step's vector.
+  vec2 vdir = v;
   vec3 phase = vec3(0.0, 0.33, 0.67) + iSeed.x;
   float hue = atan(vdir.y, vdir.x) / 6.2831 + 0.5 + 0.05 * iTime;
   vec3 col = palettePerceptual(hue, phase);
