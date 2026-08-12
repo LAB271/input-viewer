@@ -55,7 +55,7 @@ export const STRUCTURE_BASELINES = {
   "Aquarium": 0.0955,
   "Flow Field": 0.0872,
   "Bicycle Horizon": 0.0667,
-  "Matrix Rain": 0.0474,
+  "Matrix Rain": 0.009,
   "Voronoi": 0.0341,
   "Strange Attractor": 0.0285,
   "Physarum": 0.0229,
