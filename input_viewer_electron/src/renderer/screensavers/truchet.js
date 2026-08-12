@@ -60,13 +60,28 @@
  *
  * Retiling travels: a tile's beat phase is time plus a projection of its
  * position onto a per-activation direction, so the swap sweeps across the wall
- * as a front instead of every cell flipping on its own clock. The two arc
- * pairs of a tile cannot be deformed into one another -- the strand at a given
- * port changes partner -- so the swap thins one pair out while the other
- * thickens. At the halfway point all four bundles are drawn together, which is
- * a closed four-lobed rosette: the tile visibly unties and reties. On top of
- * that the key light drifts across the frame over minutes, which is what gives
- * the eye somewhere to land at 5:1.
+ * as a front instead of every cell flipping on its own clock.
+ *
+ * A tile retiles by ROTATING a quarter turn. That works because a 90-degree turn
+ * about the tile centre maps SW->SE, SE->NE, NE->NW, NW->SW, carrying the even
+ * layout's corner pair {SW, NE} exactly onto the odd layout's {SE, NW}: the two
+ * layouts are a quarter turn apart.
+ *
+ * An earlier revision crossfaded the two layouts instead, on the grounds that the
+ * strand at a given port changes partner so no continuous deformation connects
+ * them. That is true of interpolating the PAIRING, but the rotation sidesteps it
+ * by moving the whole tile. What genuinely cannot be continuous is the path
+ * colour -- a retiling really does re-wire which strand belongs to which path --
+ * so ports snap at the half-way point, where the arcs sit at 45 degrees to the
+ * edges and the geometry is furthest from any valid tiling. COLOUR_EASE then
+ * spreads that snap over ~0.7s.
+ *
+ * The rotation is preferred because a crossfade reads as one image dissolving
+ * into another, while a turn reads as the tile itself moving -- and the tile is
+ * the object the eye is tracking.
+ *
+ * On top of that the key light drifts across the frame over minutes, which is
+ * what gives the eye somewhere to land at 5:1.
  */
 import { createGLRuntime, luminanceScale } from './gl-base.js'
 import { GLSL, canvasAspect, createUniformCache } from './glsl-lib.js'
@@ -116,6 +131,13 @@ ${GLSL.palette}
 ${GLSL.worldSpace}
 
 const int MACRO = ${MACRO_CELLS};
+
+// Fraction of a beat the turn occupies. The retiling front is a spatial phase
+// gradient, so this window is also the WIDTH of the disturbed band on the wall:
+// at 0.40..0.60 a fifth of the frame was mid-turn at once and the whole stripe
+// read as broken cord. Narrow and centred keeps the turn a local event.
+const float TURN_IN = 0.46;
+const float TURN_OUT = 0.54;
 
 // One cord layer at this pixel. Two of these describe any tile: the strand
 // nearest the eye and the one behind it.
@@ -187,32 +209,84 @@ bool tileAt(vec2 f, out Strand top, out Strand bot) {
   // front is ragged rather than a ruled line.
   float phi = uBeat.x * iTime + dot(vec2(o) + fn * 0.5, uWave.xy) * uWave.z + t.b * uBeat.y;
   float tau = fract(phi);
-  float e = smoothstep(0.40, 0.60, tau);
-  float even = (mod(floor(phi), 2.0) < 0.5) ? 1.0 - e : e;
-  float odd = 1.0 - even;
 
-  // Even layout: bundles on the SW and NE corners. Odd: SE and NW. Each bundle
-  // has one port on a horizontal edge; the column depends on which side of the
-  // tile the corner is, because the radius index counts outward from it.
-  vec2 bsw = bundle(length(q), fn);
-  vec2 bne = bundle(length(q - vec2(fn)), fn);
-  vec2 bse = bundle(length(q - vec2(fn, 0.0)), fn);
-  vec2 bnw = bundle(length(q - vec2(0.0, fn)), fn);
+  // A tile retiles by ROTATING a quarter turn, not by crossfading two layouts.
+  //
+  // A 90-degree turn about the tile centre maps SW->SE, SE->NE, NE->NW, NW->SW,
+  // so it carries the even layout's corner pair {SW, NE} exactly onto the odd
+  // layout's {SE, NW}. The two layouts *are* a quarter turn apart, which is why
+  // rotating works at all -- the same fact the pre-bundle version relied on.
+  //
+  // The ease keeps the front's cadence: smoothstep(0.40, 0.60) spends 80% of the
+  // beat held at a quarter-turn multiple and 20% turning, so a tile still holds a
+  // layout for 12-22 seconds and then moves, rather than spinning continuously.
+  //
+  // mod 4 wraps the angle without a visible seam: four quarter turns is a full
+  // revolution, and the port parity below is 2-periodic, so both agree at the
+  // wrap. It keeps ang small over a 10-minute rotation slot.
+  float turns = mod(floor(phi) + smoothstep(TURN_IN, TURN_OUT, tau), 4.0);
+  float ang = turns * 1.5707963;
 
-  Strand a = Strand(bsw.x, 0.0, 0.0, ivec2(o.x + int(bsw.y), o.y), 0);
-  if (bne.x < bsw.x) a = Strand(bne.x, 0.0, 0.0, ivec2(o.x + n - 1 - int(bne.y), o.y + n), 0);
-  Strand b = Strand(bse.x, 0.0, 0.0, ivec2(o.x + n - 1 - int(bse.y), o.y), 0);
-  if (bnw.x < bse.x) b = Strand(bnw.x, 0.0, 0.0, ivec2(o.x + int(bnw.y), o.y + n), 0);
+  // Rotating the sample point by +ang renders the content rotated by -ang. The
+  // rotated point can leave the tile square near the tile's own corners; that is
+  // correct and self-limiting rather than an artifact, because bundle() clamps
+  // the radius index, so beyond the outermost arc the distance grows and no cord
+  // is drawn. The pattern is simply clipped to the tile, like a square window
+  // onto a turning disc.
+  vec2 tc = vec2(fn * 0.5);
+  float cs = cos(ang), sn = sin(ang);
+  vec2 qr = tc + mat2(cs, -sn, sn, cs) * (q - tc);
 
-  // The two layouts share their ports but not their pairings, so no continuous
-  // deformation takes one to the other. Swapping weight instead keeps every
-  // frame a valid tiling: the outgoing pair never drops below 45% width before
-  // it fades, so it thins rather than shrivels, and at the crossover all four
-  // bundles are present as a closed rosette.
-  a.w = gWidth * mix(0.45, 1.0, even);
-  a.a = smoothstep(0.02, 0.32, even);
-  b.w = gWidth * mix(0.45, 1.0, odd);
-  b.a = smoothstep(0.02, 0.32, odd);
+  vec2 bsw = bundle(length(qr), fn);
+  vec2 bne = bundle(length(qr - vec2(fn)), fn);
+
+  // Ports follow the NEAREST quarter turn, not the continuous angle. A retiling
+  // genuinely re-wires which strand belongs to which path, so path colour cannot
+  // follow the rotation continuously -- there is no correct intermediate. Nearest
+  // puts the change at tau = 0.5, where the arcs sit at 45 degrees to the tile
+  // edges and the geometry is furthest from any valid tiling, so the hue change
+  // reads as part of the turn instead of as a separate event.
+  //
+  // Each bundle is identified by the horizontal edge it terminates on; the column
+  // depends on which side of the tile the corner is, because the radius index
+  // counts outward from it. At an odd quarter turn the pair has landed on the
+  // other diagonal, so the two bundles exchange which edge they belong to.
+  bool oddTurn = mod(floor(turns + 0.5), 2.0) >= 0.5;
+  Strand a, b;
+  if (oddTurn) {
+    a = Strand(bsw.x, gWidth, 1.0, ivec2(o.x + n - 1 - int(bsw.y), o.y), 0);
+    if (bne.x < bsw.x) a = Strand(bne.x, gWidth, 1.0, ivec2(o.x + int(bne.y), o.y + n), 0);
+  } else {
+    a = Strand(bsw.x, gWidth, 1.0, ivec2(o.x + int(bsw.y), o.y), 0);
+    if (bne.x < bsw.x) a = Strand(bne.x, gWidth, 1.0, ivec2(o.x + n - 1 - int(bne.y), o.y + n), 0);
+  }
+
+  // THE TILE UNTIES BEFORE IT TURNS.
+  //
+  // A quarter turn maps the S edge onto the E edge, so a bundle's endpoints do
+  // not slide along their edge -- they leave it. There is no version of this
+  // rotation where they stay joined to the neighbour, and a plain rotation looks
+  // it: measured at 1200x240, mid-turn tiles showed cords chopped flat against a
+  // visible tile boundary, four cords wide on a coarse tile. It read as tearing.
+  //
+  // So the cords retract from the boundary while the tile turns and re-extend
+  // once it lands. Width and coverage are pinched toward zero within about half a
+  // fine cell of the tile edge, in proportion to how far through the turn the tile
+  // is. The break still happens -- it has to -- but it happens at a free end
+  // moving inward rather than at a butt joint, which is what "unties and reties"
+  // actually looks like.
+  //
+  // Both terms are needed: pinching width alone leaves a hairline where the
+  // antialias band straddles w = 0.
+  float turning = 1.0 - abs(2.0 * clamp((tau - TURN_IN) / (TURN_OUT - TURN_IN), 0.0, 1.0) - 1.0);
+  vec2 dEdge2 = min(q, vec2(fn) - q);
+  float dEdge = min(dEdge2.x, dEdge2.y);
+  a.w = gWidth * mix(1.0, smoothstep(0.0, 0.55, dEdge), turning);
+  a.a = mix(1.0, smoothstep(0.0, 0.35, dEdge), turning);
+
+  // An arc tile carries one bundle pair, so there is no second layer to weave
+  // against -- unlike a crossing tile, which alternates. bot stays empty.
+  b = Strand(1e6, gWidth, 0.0, ivec2(0), 0);
   top = a;
   bot = b;
   return true;
@@ -411,12 +485,24 @@ export default {
       return ((h ^ (h >>> 16)) >>> 0) / 4294967296
     }
 
-    /** Which of the two arc layouts a tile is in right now. */
+    /**
+     * Which of the two arc layouts a tile is in right now.
+     *
+     * Must agree with the shader's port assignment exactly, or this graph gives a
+     * path a hue for a wiring the shader is not drawing. The shader takes ports
+     * from the NEAREST quarter turn, which flips at phi + 0.5 rather than at the
+     * integer beat, so round instead of floor.
+     *
+     * The crossfade version used `floor(phi)` here while its shader already showed
+     * the next layout from tau > 0.5 onward, so the two disagreed for half of
+     * every transition. COLOUR_EASE smoothed it into a brief hue lag rather than
+     * anything obviously broken, which is presumably why it went unnoticed.
+     */
     function orientation(leaf, time) {
       const phi = beatRate * time
         + (leaf.cx * waveDir[0] + leaf.cy * waveDir[1]) * waveK
         + (leaf.phase / 255) * beatSpread
-      return ((Math.floor(phi) % 2) + 2) % 2
+      return ((Math.floor(phi + 0.5) % 2) + 2) % 2
     }
 
     /**
