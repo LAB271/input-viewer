@@ -37,11 +37,31 @@
  * the accumulation switches itself off rather than smearing a camera that has
  * jumped a long way between frames.
  *
- * Costs less than the version it replaces, despite doing far more. The old one
- * marched 90 steps x 8 DE iterations for *every* pixel including empty sky; a
- * bounding-sphere test now skips the march entirely for the ~85% of a 5:1 frame
- * the bulb does not cover, and the secondary rays (shadow, AO, reflection) run
- * a 5-iteration DE rather than the full 8.
+ * WHAT IT COSTS
+ *
+ * 18.4 fps at 6000x1200 on a real GPU (ANGLE/Metal, M3 Pro, 15s, seed 4242) --
+ * the second-slowest saver in the set, and below the ~30 fps a videowall wants.
+ * Measured in #225, which was the first time anything here was measured at the
+ * resolution the app actually runs at.
+ *
+ * An earlier version of this comment claimed this "costs less than the version it
+ * replaces, despite doing far more". DO NOT RELY ON THAT: the comparison was never
+ * measured. The old version's cost was never recorded at any resolution, and this
+ * one was only ever measured at 3000x600 -- a quarter of the pixels -- until #225.
+ *
+ * The two optimisations behind that claim are real, and worth knowing before
+ * touching anything here. They simply do not add up to a verified saving:
+ *
+ *   - a bounding-sphere test skips the march entirely for the ~85% of a 5:1 frame
+ *     the bulb does not cover, where the old one marched 90 steps x 8 DE
+ *     iterations for *every* pixel including empty sky;
+ *   - secondary rays (shadow, AO, reflection) run a 5-iteration DE rather than
+ *     the full 8.
+ *
+ * The likely cost centre at wall resolution is the temporal accumulation above:
+ * it blends into a canvas-sized HDR target every frame, which is cheap at 1.8M
+ * pixels and much less so at 7.2M. Decoupling that target from canvas size is the
+ * first thing to try, and it is what #225 proposes.
  */
 import {
   createGLRuntime, fadeAlphaForHalfLife, isBigRoomDisplay
