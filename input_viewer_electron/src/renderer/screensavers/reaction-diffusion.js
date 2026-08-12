@@ -413,6 +413,48 @@ const MAX_CELLS = 420000
 const MIN_STEPS = 3
 const MAX_STEPS = 8
 
+// Curated base hues, in OKLab turns, for the tissue/substrate ramp.
+//
+// The owner rejected the gold/amber look this saver kept landing on, so the base
+// hue is no longer a free `rng.next()`. Picking from a list rather than clamping
+// to one arc keeps the per-activation variety that makes a 10-minute rotation
+// slot feel alive, while making the disliked band unreachable by construction.
+//
+// WHY THESE SPECIFIC NUMBERS
+//
+// Measured, not chosen by eye. Converting oklabRamp(t, 0.80, 0.12) — the tissue
+// highlight, which is what dominates the frame — back to sRGB across the wheel
+// puts gold and amber at turns 0.105 to 0.260. (Sample finely: a 50-step scan
+// reads the lower edge as 0.12 and would leave almost no margin.)
+//
+// Excluding that band is necessary but NOT sufficient, because the shader adds
+// drift to the base:
+//
+//   hue = uPhase.x + 0.13 * rc + 0.08 * h + 0.015 * sin(...)
+//
+// `rc` and `h` are both clamped to [0,1], so a single activation sweeps an arc of
+// [base - 0.015, base + 0.225] — nearly a quarter of the wheel. A base just below
+// the band therefore walks straight into it. Requiring the WHOLE swept arc to
+// clear 0.09..0.28 (the measured band plus a margin) leaves bases in
+// 0.295..0.865, i.e. 57% of the wheel, and every entry below sits inside that.
+// test/reaction-diffusion-palette.test.js re-derives this and will fail if an
+// entry, the drift coefficients or the band assumption changes.
+//
+// Only the base hue is curated. `uPhase.y` is the key-light angle, not a colour,
+// and `uPhase.z` tints the thin-film specular at L=0.92 C=0.075 — a near-white
+// iridescence whose own drift spans 0.70 turns, so it cannot avoid any hue and
+// does not read as gold at that chroma. Both stay free.
+export const PALETTE_BASE_HUES = [
+  0.30,  // lichen    — yellow-green into teal
+  0.38,  // verdigris — green into teal
+  0.46,  // lagoon    — teal into cyan
+  0.55,  // cyan      — teal into pale blue
+  0.63,  // glacier   — cyan into violet
+  0.72,  // amethyst  — pale blue into magenta
+  0.80,  // orchid    — blue into pink
+  0.84   // rose      — violet into warm red
+]
+
 export default {
   name: 'Reaction Diffusion',
   create(canvas, seedValue) {
@@ -458,7 +500,9 @@ export default {
     // order of magnitude more and the flow shears the chemistry apart before it
     // can organise.
     const advect = rng.range(0.004, 0.009)
-    const palettePhase = [rng.next(), rng.next(), rng.next()]
+    // .x is the curated base hue (see PALETTE_BASE_HUES); .y is the key-light
+    // angle and .z the thin-film tint, both free.
+    const palettePhase = [rng.pick(PALETTE_BASE_HUES), rng.next(), rng.next()]
     // Reseed cadence in frames. Previously a fixed 240, so the first reseed
     // always landed at the same moment. Longer now than it used to be: with a
     // parameter field the pattern no longer settles on its own.
