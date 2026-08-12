@@ -51,7 +51,7 @@ export const STRUCTURE_BASELINES = {
   "Plasma": 0.1704,
   "Game of Life": 0.1624,
   "Frost": 0.1029,
-  "Truchet Tiles": 0.0957,
+  "Truchet Tiles": 0.39,
   "Aquarium": 0.0955,
   "Flow Field": 0.0872,
   "Bicycle Horizon": 0.0667,
