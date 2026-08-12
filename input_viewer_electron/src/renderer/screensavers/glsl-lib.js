@@ -400,3 +400,183 @@ export function createUniformCache(gl, program) {
     return loc
   }
 }
+
+// =============================================================================
+// Appended snippets (issue #118).
+//
+// These are declared after the GLSL object and merged in rather than being
+// written inline above it. That is deliberate: the savers are being reworked by
+// several people at once and every one of them touches this file, so keeping
+// additions strictly at the end of the file -- including the registration --
+// means two additions conflict only with each other, never with the existing
+// body.
+// =============================================================================
+
+/**
+ * 3D simplex noise with analytic derivatives.
+ *
+ * Two things this buys over the 2D version, both of which the plasma needs:
+ *
+ *   - Time on the third axis. A 2D field can only be *translated* over time,
+ *     which reads as a texture scrolling past. Advancing z through a 3D field
+ *     makes it churn in place, which is the difference between a screensaver
+ *     and a living surface.
+ *   - The exact gradient, for free. Finite differences over a noise field cost
+ *     an extra 2-6 evaluations and are only as smooth as the step size; the
+ *     analytic gradient is exact and comes out of arithmetic already done. Once
+ *     you have it you can shade the noise as a heightfield and use its
+ *     steepness to attenuate later octaves (see fbmd3).
+ *
+ * The value half is Ashima Arts / Stefan Gustavson's webgl-noise `snoise`
+ * (MIT), unchanged. The derivative is the textbook differentiation of its final
+ * sum: each corner contributes w^4 * dot(g, x) with w = 0.6 - |x|^2, so
+ *
+ *   d/dx [ w^4 (g.x) ] = w^4 g + 4 w^3 (dw/dx) (g.x) = w^4 g - 8 w^3 (g.x) x
+ *
+ * Returns vec4(value, d/dx, d/dy, d/dz); value is roughly [-1, 1].
+ *
+ * Requires: simplex2d (for mod289(vec3) and permute289(vec3)).
+ */
+const simplex3d = /* glsl */`
+vec4 mod289(vec4 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+vec4 permute289(vec4 x) { return mod289(((x * 34.0) + 1.0) * x); }
+vec4 taylorInvSqrt(vec4 r) { return 1.79284291400159 - 0.85373472095314 * r; }
+
+vec4 snoised(vec3 v) {
+  const vec2 C = vec2(1.0 / 6.0, 1.0 / 3.0);
+  const vec4 D = vec4(0.0, 0.5, 1.0, 2.0);
+
+  // Skew into the simplex lattice and find the first corner.
+  vec3 i  = floor(v + dot(v, C.yyy));
+  vec3 x0 = v - i + dot(i, C.xxx);
+
+  // Rank the components to pick which of the six tetrahedra we are in.
+  vec3 gt = step(x0.yzx, x0.xyz);
+  vec3 l  = 1.0 - gt;
+  vec3 i1 = min(gt.xyz, l.zxy);
+  vec3 i2 = max(gt.xyz, l.zxy);
+
+  vec3 x1 = x0 - i1 + C.xxx;
+  vec3 x2 = x0 - i2 + C.yyy;
+  vec3 x3 = x0 - D.yyy;
+
+  i = mod289(i);
+  vec4 p = permute289(permute289(permute289(
+             i.z + vec4(0.0, i1.z, i2.z, 1.0))
+           + i.y + vec4(0.0, i1.y, i2.y, 1.0))
+           + i.x + vec4(0.0, i1.x, i2.x, 1.0));
+
+  // Gradients: 7x7x6 points over a cube, mapped onto an octahedron.
+  float n_ = 0.142857142857; // 1/7
+  vec3  ns = n_ * D.wyz - D.xzx;
+
+  vec4 j = p - 49.0 * floor(p * ns.z * ns.z);
+
+  vec4 xf = floor(j * ns.z);
+  vec4 yf = floor(j - 7.0 * xf);
+
+  vec4 gx = xf * ns.x + ns.yyyy;
+  vec4 gy = yf * ns.x + ns.yyyy;
+  vec4 gh = 1.0 - abs(gx) - abs(gy);
+
+  vec4 b0 = vec4(gx.xy, gy.xy);
+  vec4 b1 = vec4(gx.zw, gy.zw);
+
+  vec4 s0 = floor(b0) * 2.0 + 1.0;
+  vec4 s1 = floor(b1) * 2.0 + 1.0;
+  vec4 sh = -step(gh, vec4(0.0));
+
+  vec4 a0 = b0.xzyw + s0.xzyw * sh.xxyy;
+  vec4 a1 = b1.xzyw + s1.xzyw * sh.zzww;
+
+  vec3 g0 = vec3(a0.xy, gh.x);
+  vec3 g1 = vec3(a0.zw, gh.y);
+  vec3 g2 = vec3(a1.xy, gh.z);
+  vec3 g3 = vec3(a1.zw, gh.w);
+
+  vec4 norm = taylorInvSqrt(vec4(dot(g0, g0), dot(g1, g1), dot(g2, g2), dot(g3, g3)));
+  g0 *= norm.x; g1 *= norm.y; g2 *= norm.z; g3 *= norm.w;
+
+  // Radial falloff per corner. w is kept unsquared here (Ashima squares in
+  // place) because the derivative needs both w^3 and w^4.
+  vec4 w  = max(0.6 - vec4(dot(x0, x0), dot(x1, x1), dot(x2, x2), dot(x3, x3)), 0.0);
+  vec4 w2 = w * w;
+  vec4 w4 = w2 * w2;
+  vec4 gd = vec4(dot(g0, x0), dot(g1, x1), dot(g2, x2), dot(g3, x3));
+
+  vec4 c = w2 * w * gd;
+  vec3 grad = -8.0 * (c.x * x0 + c.y * x1 + c.z * x2 + c.w * x3)
+            + w4.x * g0 + w4.y * g1 + w4.z * g2 + w4.w * g3;
+
+  return 42.0 * vec4(dot(w4, gd), grad);
+}
+
+// Value only, for the places that do not need the gradient.
+float snoise(vec3 v) { return snoised(v).x; }
+`
+
+/**
+ * fBm over 3D simplex noise, carrying the analytic gradient and using it to
+ * erode later octaves. Inigo Quilez's construction
+ * (https://iquilezles.org/articles/morenoise/), ported rather than reinvented.
+ *
+ * Two ideas, both from that article:
+ *
+ *   - Each octave is rotated in 3D as well as scaled. Pure scaling by a power
+ *     of two lines every octave's lattice up with the last one and the sum
+ *     acquires a faint grid; an irrational-ish scale plus a rotation
+ *     decorrelates them. The derivative has to be rotated back by the inverse
+ *     to stay a derivative, which is what the `m` matrix accumulates -- for an
+ *     orthonormal rotation the inverse is the transpose.
+ *   - Erosion: divide an octave's contribution by 1 + k * |accumulated slope|^2,
+ *     so detail is suppressed where the field is already steep and survives on
+ *     the flats. It is a one-line change and it is the whole difference between
+ *     fBm that looks like static and fBm that looks like carved rock, because
+ *     it is a crude model of what erosion actually does to a landscape.
+ *
+ * Returns vec4(value, gradient) with the value normalised to roughly [-1, 1].
+ * The gradient is in units of the *input* coordinate, so a caller that scaled
+ * its coordinates has scaled the gradient by the same factor.
+ *
+ * `gain` matters more here than in an ordinary fBm, and 0.5 is usually the
+ * wrong answer. Each octave's *gradient* is amplified by the lacunarity, so at
+ * gain 0.5 and lacunarity ~2 every octave contributes roughly equal gradient
+ * energy and the returned normal is dominated by the finest one -- lighting the
+ * result then produces pixel-scale grain rather than relief. Pick gain such
+ * that gain * lacunarity is comfortably below 1 (0.40 gives a 0.79 per-octave
+ * gradient falloff) whenever the gradient is going to be used for shading or
+ * for domain warping.
+ *
+ * Requires: simplex3d.
+ */
+const fbmd3 = /* glsl */`
+// Quilez's decorrelating rotation and its inverse (orthonormal, so transpose).
+const mat3 FBMD3_ROT = mat3( 0.00,  0.80,  0.60,
+                            -0.80,  0.36, -0.48,
+                            -0.60, -0.48,  0.64);
+const mat3 FBMD3_ROT_INV = mat3( 0.00, -0.80, -0.60,
+                                 0.80,  0.36, -0.48,
+                                 0.60, -0.48,  0.64);
+
+vec4 fbmd3(vec3 p, int octaves, float gain, float erosion) {
+  // 1.97 rather than 2.0: an exact octave doubling repeats the lattice
+  // alignment at every level, and the near-miss is free.
+  const float LACUNARITY = 1.97;
+  float amp = 0.5, sum = 0.0, norm = 0.0;
+  vec3 grad = vec3(0.0);
+  mat3 m = mat3(1.0);
+  for (int i = 0; i < octaves; i++) {
+    vec4 n = snoised(p);
+    sum  += amp * n.x / (1.0 + erosion * dot(grad, grad));
+    grad += amp * m * n.yzw;
+    norm += amp;
+    amp  *= gain;
+    p = LACUNARITY * FBMD3_ROT * p;
+    m = LACUNARITY * FBMD3_ROT_INV * m;
+  }
+  float inv = 1.0 / max(norm, 1e-5);
+  return vec4(sum * inv, grad * inv);
+}
+`
+
+Object.assign(GLSL, { simplex3d, fbmd3 })
