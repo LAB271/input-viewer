@@ -47,7 +47,7 @@ export const STRUCTURE_BASELINES = {
   "Particle Swarm": 0.6037,
   "White Particles": 0.485,
   "Moire Interference": 0.19,
-  "Raymarch Fractal": 0.2874,
+  "Raymarch Fractal": 0.0081,
   "Plasma": 0.0001,
   "Game of Life": 0.1624,
   "Frost": 0.1029,
