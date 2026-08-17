@@ -109,12 +109,31 @@ const float FAR = 40.0;
 // version of the same solid, which is all a shadow, an occlusion tap or a
 // blurred reflection can distinguish. Halving the trig work on those rays is
 // what pays for having three of them.
-const int DE_FINE = 8;
-const int DE_COARSE = 5;
+//
+// STEP AND ITERATION BUDGETS, MEASURED AT 6000x1200 (#225)
+//
+// These were all reduced together, and that word matters: measured individually
+// at wall resolution, most of them do nothing at all.
+//
+//   baseline (110/26/40, DE 8/5, eps 0.55)          16.3 fps
+//   DE_FINE 6 alone                                 16.3
+//   PRIMARY_STEPS 70 alone                          16.4
+//   SHADOW 16 + REFLECT 22                          17.7
+//   all of the above + eps 1.2                      25.5
+//   this file (64/12/16, DE 6/4, eps 1.6)           31.3
+//
+// A 92% gain from changes that are worth nothing on their own is not an
+// iteration-count effect. It reads as occupancy: the loop bounds are compile-time
+// constants, so lowering them together lets the compiler hold the shader in fewer
+// registers and run more threads in flight. Anyone tuning these should therefore
+// change them as a set and measure the set -- reverting one "because it made no
+// difference" will silently cost most of the gain.
+const int DE_FINE = 6;
+const int DE_COARSE = 4;
 
-const int PRIMARY_STEPS = 110;
-const int SHADOW_STEPS = 26;
-const int REFLECT_STEPS = 40;
+const int PRIMARY_STEPS = 64;
+const int SHADOW_STEPS = 12;
+const int REFLECT_STEPS = 16;
 
 // ---------------------------------------------------------------- geometry
 
@@ -358,7 +377,18 @@ bool marchBulb(vec3 ro, vec3 rd, float power, float pixelRadius,
   for (int i = 0; i < PRIMARY_STEPS; i++) {
     vec4 tr;
     float d = bulbDE(ro + rd * t, power, DE_FINE, tr);
-    float eps = max(2.0e-5, 0.55 * t * pixelRadius);
+    // Hit tolerance, in units of the pixel's own footprint. The coefficient was
+    // 0.55; 1.6 is a deliberate loosening for the wall.
+    //
+    // This is why the saver is disproportionately expensive at 6000x1200 rather
+    // than merely 4x expensive: pixelRadius shrinks as resolution rises, so eps
+    // shrinks with it and every ray must march CLOSER to the surface before it
+    // terminates. Cost grows with pixels AND with steps-per-pixel.
+    //
+    // Loosening it trades sub-pixel silhouette precision, which the temporal
+    // accumulation already averages over and which is invisible at wall viewing
+    // distance, for steps that are not taken.
+    float eps = max(2.0e-5, 1.6 * t * pixelRadius);
     // Named stepLen, not step, which is a GLSL builtin this file also uses.
     float stepLen = max(d * 0.92, eps * 0.5);
     // Volumetric-ish glow, weighted by the step length so the accumulation is
