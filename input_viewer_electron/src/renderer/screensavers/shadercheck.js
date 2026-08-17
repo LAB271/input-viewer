@@ -142,6 +142,23 @@ const STRUCTURE_SAMPLE_FRAMES = [5, 12]
 // catching is DVD Logo wobbling from 0.0028 to 0.0017, a drop of 0.0011.
 const STRUCTURE_MIN_ABS_DROP = 0.0015
 
+// Minimum luminance spread (p99.9 - p05) for a saver that should be drawing
+// something (#227).
+//
+// This exists because STRUCTURE_MIN_ABS_DROP creates a blind spot at the bottom
+// of the density range: a saver whose baseline is under that margin cannot
+// produce a drop large enough to trip the relative check, so it is unprotected
+// against going flat. Plasma sits at 0.0001 and Starfield Warp at 0.0011.
+//
+// Unlike the edge-density rule this is an ABSOLUTE floor with no per-saver
+// baseline, which is only safe because the measured range is so wide. Across all
+// 30 savers the lowest spread belonging to a saver with a non-zero baseline is
+// Julia Set at 0.1004; the only two zeroes are Wave Tank and Tree Growth, which
+// have a zero edge-density baseline and are already skipped for the same reason
+// (they need seconds to develop). 0.02 is a fifth of the smallest real value, so
+// there is a 5x margin before a healthy saver could reach it.
+const UNIFORM_SPREAD_MIN = 0.02
+
 /**
  * Read back the rendered frame and report NaN, negative and blown-out pixels.
  *
@@ -204,7 +221,25 @@ function inspectPixels(gl, chain) {
   lums.sort()
   const p05 = lums[Math.floor(0.05 * (total - 1))]
   const peak = lums[total - 1]
-  return { total, nan, negative, blown, lit, p05, peak, edgeDensity, hdr: Boolean(hdr) }
+  // Luminance spread, for the uniformity check (#227). This is the measurement
+  // edge density cannot make: a frame can be smooth (no edges) and still be a
+  // perfectly good picture, but it cannot be UNIFORM and be one.
+  //
+  // p99.9 rather than p95 or the peak, and that choice is measured, not assumed:
+  //
+  //   p95 - p05   zero for 5 healthy savers -- DVD Logo, Strange Attractor,
+  //               Falling Sand, Wave Tank, Tree Growth. Their subject covers
+  //               under 5% of the frame, so both percentiles sit in the
+  //               background and the statistic cannot tell a sparse subject from
+  //               a dead frame. Unusable.
+  //   peak - p05  works, but one stray bright pixel is enough to mask a dead
+  //               frame, which is the failure this is meant to catch.
+  //   p99.9 - p05 non-zero for every saver that has a non-zero baseline. At this
+  //               harness resolution 0.1% of the frame is thousands of pixels, so
+  //               a real subject registers and an outlier does not.
+  const p999 = lums[Math.floor(0.999 * (total - 1))]
+  const spread = p999 - p05
+  return { total, nan, negative, blown, lit, p05, p999, peak, spread, edgeDensity, hdr: Boolean(hdr) }
 }
 
 /** Turn pixel stats into a failure message, or null when the frame looks sane. */
@@ -224,6 +259,20 @@ function pixelProblem(s, name) {
   // cannot work here: Reaction Diffusion legitimately scores 0.000 while White
   // Particles scores 0.62.
   const baseline = STRUCTURE_BASELINES[name]
+
+  // Uniformity, before the edge-density rule (#227). A uniform frame should be
+  // reported as uniform rather than as a structure collapse, and this catches the
+  // case the edge-density rule cannot see at all: a saver whose baseline is below
+  // STRUCTURE_MIN_ABS_DROP going completely flat. Gated on a non-zero baseline,
+  // the same gate the rule below uses, so the two savers that legitimately start
+  // blank stay exempt.
+  if (typeof baseline === 'number' && baseline > 0 && s.spread < UNIFORM_SPREAD_MIN) {
+    return `frame is uniform: luminance spread ${s.spread.toFixed(4)} is below ` +
+      `${UNIFORM_SPREAD_MIN} (p05 ${s.p05.toFixed(4)}, p99.9 ${s.p999.toFixed(4)}). ` +
+      'The frame renders and is not black, but nothing varies across it -- a ' +
+      'flattened display pass, or a simulation that never started.'
+  }
+
   if (typeof baseline === 'number' && baseline > 0) {
     const floor = baseline * (1 - STRUCTURE_DROP_TOLERANCE)
     // Both conditions, not either (#192). The relative test says "this is a big
@@ -277,8 +326,16 @@ async function run() {
           // a per-field max across frames would invent a frame that never
           // existed and could mask a fault that appears in one of them.
           if (!pixels) pixels = sample
-          else if (sample.edgeDensity > pixels.edgeDensity) {
-            pixels = { ...pixels, edgeDensity: sample.edgeDensity }
+          else {
+            // Raise edge density and spread independently. A saver still
+            // developing at frame 5 should be judged on its best sampled frame
+            // for each, and neither feeds the NaN/blown/lit checks.
+            if (sample.edgeDensity > pixels.edgeDensity) {
+              pixels = { ...pixels, edgeDensity: sample.edgeDensity }
+            }
+            if (sample.spread > pixels.spread) {
+              pixels = { ...pixels, spread: sample.spread }
+            }
           }
         }
       } catch (err) {
