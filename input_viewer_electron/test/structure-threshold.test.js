@@ -36,6 +36,20 @@ function constant(name) {
 const TOLERANCE = constant('STRUCTURE_DROP_TOLERANCE')
 const MIN_ABS_DROP = constant('STRUCTURE_MIN_ABS_DROP')
 const UNIFORM_SPREAD_MIN = constant('UNIFORM_SPREAD_MIN')
+const STALE_RATIO = constant('STALE_RATIO')
+
+/**
+ * Transcription of the staleness rule (#227). True means "report a warning".
+ *
+ * Deliberately symmetric. A baseline far ABOVE the real density means the saver
+ * nearly fails every run; far BELOW means it is silently under-protected, because
+ * the collapse check only ever fires on a drop.
+ */
+function staleBaseline (baseline, measured) {
+  if (!(baseline > 0)) return false
+  const ratio = measured / baseline
+  return ratio >= STALE_RATIO || ratio <= 1 / STALE_RATIO
+}
 
 /**
  * Transcription of the uniformity rule (#227). True means "report a failure".
@@ -232,5 +246,57 @@ describe('the uniformity rule (#227)', () => {
     // Plasma is the case in point: almost no edges (baseline 0.0001) and a
     // perfectly good image. Low edge density must not imply uniform.
     expect(uniform(0.0001, 0.1259)).toBe(false)
+  })
+})
+
+describe('baseline staleness (#227)', () => {
+  it('pins the ratio, which is calibrated against real run-to-run noise', () => {
+    // 2x was tried and flagged Raymarch Fractal and Reaction Diffusion, both of
+    // which vary 2.3x between runs on their own. The threshold has to clear the
+    // noisiest saver, not the median.
+    expect(STALE_RATIO).toBe(4)
+  })
+
+  it('catches the three baselines found stale on main', () => {
+    // Left behind by the rewrites in #212, #210 and #211: the collapse check only
+    // fires on a drop, so a baseline far below reality passes in silence.
+    expect(staleBaseline(0.0011, 0.1423)).toBe(true)   // Starfield Warp, 129x
+    expect(staleBaseline(0.002, 0.0557)).toBe(true)    // Mandelbrot, 28x
+    expect(staleBaseline(0.0341, 0.1557)).toBe(true)   // Voronoi, 4.6x
+  })
+
+  it('catches the Truchet case that motivated it', () => {
+    // 0.0957 inherited from main's single quarter arcs against 0.397 measured, so
+    // a collapse to a quarter of the real density would have passed.
+    expect(staleBaseline(0.0957, 0.397)).toBe(true)
+  })
+
+  it('is quiet on savers whose own measurement is bimodal', () => {
+    expect(staleBaseline(0.0081, 0.0185)).toBe(false)  // Raymarch, 2.3x
+    expect(staleBaseline(0.0149, 0.034)).toBe(false)   // Reaction Diffusion, 2.3x
+  })
+
+  it('is quiet on ordinary reproduction', () => {
+    for (const [name, baseline] of Object.entries(STRUCTURE_BASELINES)) {
+      if (!(baseline > 0)) continue
+      for (const drift of [0.98, 1.0, 1.02]) {
+        expect(staleBaseline(baseline, baseline * drift), `${name} at ${drift}x`).toBe(false)
+      }
+    }
+  })
+
+  it('skips a zero baseline, which carries no ratio', () => {
+    expect(staleBaseline(0, 0)).toBe(false)
+    expect(staleBaseline(0, 0.5)).toBe(false)
+  })
+
+  it('leaves only one saver below the absolute margin', () => {
+    // The point of fixing the stale baselines. Starfield Warp was never a dim
+    // saver -- it measures 0.1423 -- so correcting its baseline moves it into full
+    // protection and shrinks the known blind spot to Plasma alone.
+    const subMargin = Object.entries(STRUCTURE_BASELINES)
+      .filter(([, b]) => b > 0 && b <= MIN_ABS_DROP)
+      .map(([n]) => n)
+    expect(subMargin).toEqual(['Plasma'])
   })
 })
