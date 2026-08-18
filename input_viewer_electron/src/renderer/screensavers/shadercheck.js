@@ -159,6 +159,31 @@ const STRUCTURE_MIN_ABS_DROP = 0.0015
 // there is a 5x margin before a healthy saver could reach it.
 const UNIFORM_SPREAD_MIN = 0.02
 
+// Baseline staleness bounds (#227). A measured density this far from its baseline
+// means the BASELINE is wrong, not the frame.
+//
+// The check only ever fails on a drop, so a baseline that sits far BELOW what the
+// saver really produces is invisible -- and that is not hypothetical. Truchet
+// Tiles carried 0.0957, inherited from main's single quarter arcs, while its
+// multi-strand bundles measure 0.397. A collapse to a quarter of the real density
+// would have passed, silently, and nothing said so.
+//
+// 4x either way, and that number is measured rather than picked. 2x was tried
+// first and flagged two savers whose measurement is simply noisy at this sample
+// window: Raymarch Fractal read 0.0082 in one run and 0.0185 in the next (2.3x)
+// and Reaction Diffusion likewise 2.3x -- both bimodal at frames 5/12, which is
+// the effect #192 was filed over. Most savers reproduce to within 1-2%, but the
+// threshold has to clear the worst one, not the median.
+//
+// 4x still catches every real case: Truchet's historical gap was 4.1x, and the
+// three found on main when this check was added were 4.6x, 27.8x and 129.4x.
+//
+// REPORTED, NOT FAILED, and that is deliberate. A stale baseline is a defect in
+// the check's configuration rather than in the frame under test, so failing on it
+// would turn every unrelated PR red until somebody fixed a saver they had not
+// touched. Warning keeps it visible without holding the repo hostage.
+const STALE_RATIO = 4.0
+
 /**
  * Read back the rendered frame and report NaN, negative and blown-out pixels.
  *
@@ -217,6 +242,7 @@ function inspectPixels(gl, chain) {
     }
   }
   const edgeDensity = comparisons === 0 ? 0 : edges / comparisons
+
 
   lums.sort()
   const p05 = lums[Math.floor(0.05 * (total - 1))]
@@ -374,6 +400,32 @@ async function run() {
       : Math.min(prev, r.pixels.edgeDensity)
   }
   console.log('SHADERCHECK_DENSITIES ' + JSON.stringify(densities))
+
+  // Baseline staleness (#227), in both directions. Uses the same per-saver minimum
+  // across seeds that the baselines themselves are generated from, so this
+  // compares like with like.
+  const stale = []
+  for (const [name, measured] of Object.entries(densities)) {
+    const baseline = STRUCTURE_BASELINES[name]
+    if (typeof baseline !== 'number' || baseline <= 0) continue
+    const ratio = measured / baseline
+    if (ratio >= STALE_RATIO || ratio <= 1 / STALE_RATIO) {
+      stale.push({ name, baseline, measured: Number(measured.toFixed(4)), ratio: Number(ratio.toFixed(2)) })
+    }
+  }
+  console.log('SHADERCHECK_STALE ' + JSON.stringify(stale))
+
+  if (stale.length) {
+    log(`\n--- ${stale.length} stale baseline(s): measured density is over ${STALE_RATIO}x from the baseline ---`)
+    for (const t of stale) {
+      const dir = t.ratio >= STALE_RATIO
+        ? 'baseline is too LOW -- the saver is under-protected against a real collapse'
+        : 'baseline is too HIGH -- the saver is close to failing on every run'
+      log(`  ${t.name}: baseline ${t.baseline}, measured ${t.measured} (${t.ratio}x) -- ${dir}`)
+    }
+    log('  Not a failure: a stale baseline is a config defect, not a bad frame. Update')
+    log('  only the affected saver\'s line; `npm run baselines` rewrites all 30.')
+  }
 
   const failed = results.filter((r) => r.error)
   log(`\n--- ${results.length - failed.length}/${results.length} runs OK ---`)
