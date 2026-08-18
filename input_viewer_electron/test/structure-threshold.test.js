@@ -37,6 +37,19 @@ const TOLERANCE = constant('STRUCTURE_DROP_TOLERANCE')
 const MIN_ABS_DROP = constant('STRUCTURE_MIN_ABS_DROP')
 const UNIFORM_SPREAD_MIN = constant('UNIFORM_SPREAD_MIN')
 const STALE_RATIO = constant('STALE_RATIO')
+const UNDULATION_MIN = constant('UNDULATION_MIN')
+
+/**
+ * Transcription of the monotonicity rule (#235). True means "report a failure".
+ *
+ * Gated on the saver being BELOW the absolute margin, which is the set the density
+ * rule cannot reach. Not applied set-wide on purpose -- see the note on the
+ * constant.
+ */
+function monotonic (baseline, undulation) {
+  if (!(baseline > 0) || baseline > MIN_ABS_DROP) return false
+  return undulation < UNDULATION_MIN
+}
 
 /**
  * Transcription of the staleness rule (#227). True means "report a warning".
@@ -298,5 +311,47 @@ describe('baseline staleness (#227)', () => {
       .filter(([, b]) => b > 0 && b <= MIN_ABS_DROP)
       .map(([n]) => n)
     expect(subMargin).toEqual(['Plasma'])
+  })
+})
+
+describe('the monotonicity rule (#235)', () => {
+  it('pins the threshold against what was measured', () => {
+    // Plasma, the only gated saver, measures 0.5948 -- a 5x margin. A monotonic
+    // ramp measures 0.0000 and a radial gradient 0.0586, both caught.
+    expect(UNDULATION_MIN).toBe(0.12)
+    expect(0.5948 / UNDULATION_MIN).toBeGreaterThan(4)
+    expect(UNDULATION_MIN).toBeGreaterThan(0.0586 * 1.9)
+  })
+
+  it('catches a gradient for every sub-margin saver', () => {
+    const subMargin = Object.entries(STRUCTURE_BASELINES)
+      .filter(([, b]) => b > 0 && b <= MIN_ABS_DROP)
+    expect(subMargin.length).toBeGreaterThan(0)
+    for (const [name, baseline] of subMargin) {
+      // A linear ramp, and a radial gradient.
+      expect(monotonic(baseline, 0), `${name}: linear ramp`).toBe(true)
+      expect(monotonic(baseline, 0.0586), `${name}: radial gradient`).toBe(true)
+      // And the healthy value must not fire.
+      expect(monotonic(baseline, 0.5948), `${name}: healthy frame`).toBe(false)
+    }
+  })
+
+  it('is not applied set-wide, deliberately', () => {
+    // The lowest undulation among savers with a non-zero baseline is Julia Set at
+    // 0.1544, which clears 0.12 by only 1.3x. A set-wide floor would sit within
+    // that of a healthy saver -- the same thin margin that made the coarse-stride
+    // approach unshippable in #234, and no more acceptable here.
+    const above = Object.entries(STRUCTURE_BASELINES).filter(([, b]) => b > MIN_ABS_DROP)
+    expect(above.length).toBeGreaterThan(20)
+    for (const [name, baseline] of above) {
+      expect(monotonic(baseline, 0), `${name} is above the margin, so exempt`).toBe(false)
+    }
+  })
+
+  it('leaves the zero-baseline savers exempt', () => {
+    for (const [name, baseline] of Object.entries(STRUCTURE_BASELINES)) {
+      if (baseline !== 0) continue
+      expect(monotonic(baseline, 0), `${name} is exempt by design`).toBe(false)
+    }
   })
 })
