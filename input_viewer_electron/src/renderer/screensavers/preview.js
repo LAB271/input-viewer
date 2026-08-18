@@ -153,7 +153,11 @@ window.addEventListener('resize', () => {
 })
 
 function normalize(s) {
-  return s.toLowerCase().replace(/\s+/g, '')
+  // Hyphens and underscores are stripped as well as whitespace, so the form a
+  // reader will actually type -- white-particles, matching the file on disk --
+  // resolves. Before this, only whiteparticles matched, which made CLAUDE.md's
+  // one worked example of the flag a copy-paste failure (#207).
+  return s.toLowerCase().replace(/[\s_-]+/g, '')
 }
 
 // Resolve initial selection from the URL hash (#1 or #plasma), else random.

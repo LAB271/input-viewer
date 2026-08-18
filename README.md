@@ -33,7 +33,9 @@ The app includes auto-updates and will notify you when new versions are availabl
 - **Freeze frame** — Pause any feed with Space key
 - **Settings panel** — Configure inputs with toggle switches
 - **No-signal detection** — Custom overlay when source disconnects
-- **DVD screensaver** — Bouncing logo when feeds lose signal
+- **30 screensavers** — GPU-rendered WebGL2, one picked at random when every feed
+  loses signal, rotating every 10 minutes. Includes a live weather display and
+  optional Art-Net room lighting, both off by default
 - **Fullscreen support** — Designed for dedicated display setups
 - **Auto-updater** — Automatic updates from GitHub releases
 - **Any capture card** — Works with any video capture device

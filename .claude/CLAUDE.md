@@ -54,17 +54,68 @@ npm run build:mac    # Build macOS DMG
 npm run build:win    # Build Windows installer
 
 # Preview a screensaver in a browser with a real WebGL2 context.
-# --wall emulates the 6000x1200 videowall; W toggles it, L cycles an
-# ambient-light washout overlay, S draws a new random seed.
+# The selector is matched after lowercasing and stripping whitespace, hyphens and
+# underscores, so white-particles, whiteparticles and "White Particles" all work.
 npm run screensaver -- white-particles --wall
 
 # Pin a seed to reproduce an exact look (any string or integer).
 # The seed used is logged to the console on every activation.
 open 'http://localhost:5180/preview.html?seed=abc#plasma'
 
-# Compile every screensaver's shaders on a real GPU, headlessly.
+# Compile every screensaver's shaders, headlessly. Forces SwiftShader.
 npm run shadercheck
+
+# Benchmark the CSS, WebGPU and OffscreenCanvas-worker compositing paths (#62),
+# with a fake capture device. Does NOT force SwiftShader -- see below.
+npm run bench -- --size 6000x1200 --seconds 8
+
+# Regenerate the shadercheck structure baselines. READ THE CAVEAT BELOW FIRST.
+npm run baselines
 ```
+
+### shadercheck forces SwiftShader; bench deliberately does not
+
+`shadercheck` pins the software rasteriser on purpose, because its job is a
+deterministic yes/no on whether every shader compiles and renders sane pixels, and
+a deterministic answer is worth more than a fast one. `bench` measures *time*, and
+a timing taken on a software rasteriser is meaningless, so it runs on the real GPU.
+
+Getting this backwards has cost real work: several PRs claimed frame cost "cannot
+be measured headlessly" because they had seen shadercheck's SwiftShader numbers.
+It can — headless Chrome gives ANGLE/Metal on an M3 Pro, and every frame-cost
+figure in the issues was measured that way.
+
+### `npm run baselines` rewrites all 30 entries
+
+It regenerates every line of `structure-baselines.js` from one fresh measurement.
+When ONE saver is deliberately redesigned and its density legitimately moves, edit
+only that saver's line by hand: regenerating buries the intended change among 29
+lines of run-to-run noise, and conflicts with every other open PR touching the
+file. Six baselines moved during the #210/#214..#220 batch and regenerating would
+have made those PRs mutually unmergeable. Keep entries in descending value order —
+a test enforces it.
+
+### Preview harness keys
+
+Documented here as well as in the HUD legend, because these are the review tools
+and the HUD is only visible once you already know to look.
+
+| Key | Purpose |
+|---|---|
+| `W` | Videowall emulation at 6000x1200 — the geometry that ships, and where most composition problems only become visible |
+| `L` | Ambient-light washout (0 / 6 / 12 / 20%), for the lit-room case in #88 |
+| `A` | Cycle canned weather states, so rain, snow, fog and night are reviewable without waiting for real weather |
+| `S` | Restart with a NEW seed — how you check that a saver's randomised ranges all look good |
+| `R` | Restart with the SAME seed, for iterating on one exact look |
+| `←` `→` | Previous / next screensaver |
+| `H` | Show or hide the HUD |
+| `F` | Fullscreen |
+| `[` `]` | Bloom threshold down / up |
+| `-` `+` | Bloom intensity down / up |
+| `0` | Reset bloom to the saver's own settings |
+
+Note the collision: in the shipped app `+` and `-` step through screensavers, but in
+this harness they adjust bloom intensity — use the arrow keys here.
 
 ## Screensaver randomness
 

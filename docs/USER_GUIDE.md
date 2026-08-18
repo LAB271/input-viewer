@@ -6,7 +6,7 @@ Input Viewer is a lightweight video input display application for viewing multip
 
 - **Dual/Single View** - Display one or two video inputs side by side
 - **No-Signal Detection** - Automatically shows "NO SIGNAL" when input is disconnected
-- **DVD Screensaver** - Bouncing logo when all inputs have no signal (5 min timeout)
+- **30 Screensavers** - GPU-rendered, shown when all inputs have no signal (5 min timeout)
 - **Freeze Frame** - Pause the display without affecting the source
 - **Audio Controls** - Control capture card volume and system output
 - **Remote Keyboard** - Forward clicker presses to a presenter PC over network
@@ -56,6 +56,8 @@ The app automatically selects the default mode based on your screen aspect ratio
 | `F` | Toggle fullscreen |
 | `Esc` | Exit fullscreen / Unfreeze / Close menus |
 | `Q` | Quit application |
+| `V` | Show or hide the screensaver immediately, without waiting out the 5-minute no-signal delay |
+| `+` / `-` | Step forward or back through the screensavers while one is showing |
 | `←` `→` `PgUp` `PgDn` | Remote keyboard (if enabled) |
 
 ## Settings
@@ -140,9 +142,14 @@ For touch screen setups:
 - **Tap** the dropdown trigger area to open/close the menu
 - **Tap outside** the menu to close it
 
-## Screensaver
+## Screensavers
 
-When all video feeds show "no signal" for 5 minutes, a bouncing logo screensaver appears.
+When all video feeds show "no signal" for 5 minutes, a screensaver appears. There are
+**30**, one picked at random, and it changes every 10 minutes. The rotation never picks
+the same one twice in a row.
+
+Each screensaver also looks different every time it starts — the random choices inside
+it are seeded from the clock — so the same one twice is not the same picture twice.
 
 To exit the screensaver:
 
@@ -150,6 +157,65 @@ To exit the screensaver:
 - Shake the mouse rapidly
 - Press any key
 - Touch the screen
+
+You can also drive it by hand: **`V`** shows or hides it immediately rather than waiting
+out the five-minute delay, and **`+`** / **`-`** step through the set in the order below.
+
+### The split-flap board is not one of them
+
+When a feed loses signal you first see a **split-flap departures board**. That is the
+no-signal display, not a screensaver: it appears straight away rather than after five
+minutes, it never comes up in the rotation, and `+` / `-` cannot reach it.
+
+### The screensavers
+
+Listed in rotation order, which is the order `+` and `-` step through.
+
+<!-- SCREENSAVER-LIST -->
+1. DVD Logo
+2. Plasma
+3. Flow Field
+4. Raymarch Fractal
+5. Mandelbrot
+6. Julia Set
+7. Burning Ship
+8. Reaction Diffusion
+9. Particle Swarm
+10. White Particles
+11. Boids
+12. Strange Attractor
+13. Voronoi
+14. Metaballs
+15. Game of Life
+16. Matrix Rain
+17. Starfield Warp
+18. Pong
+19. Truchet Tiles
+20. Moire Interference
+21. ASCII Doughnut
+22. Double Pendulum
+23. Wave Tank
+24. Falling Sand
+25. Frost
+26. Tree Growth
+27. Physarum
+28. Aquarium
+29. Bicycle Horizon
+30. Weather
+<!-- /SCREENSAVER-LIST -->
+
+### Weather and Art-Net
+
+Two of these reach outside the machine, and **both are off until you turn them on**:
+
+- **Weather** (number 30) draws the live conditions for a
+  configured latitude and longitude. With it off, it is skipped in the rotation. It
+  fetches from a public weather service every 15 minutes while enabled.
+- **Art-Net reactive mode** is not a screensaver but affects them all: it sends the
+  colour of whatever is on screen to a lighting service, so the room matches the wall.
+
+Neither makes any network request until enabled and configured. See the Configuration
+section of `README.md` for the settings and exactly what each one sends.
 
 ## Troubleshooting
 
