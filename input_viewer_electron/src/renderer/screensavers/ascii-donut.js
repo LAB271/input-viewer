@@ -33,7 +33,12 @@ const GLYPH_PX = 64
 // Target character cell height in device pixels at 1080p. Sized in angular
 // terms per issue #88: a glyph that reads on a laptop can be sub-resolvable at
 // 8m, so this scales with the display's short axis rather than being fixed.
-const CELL_PX = 26
+//
+// 26 gave ~29px cells at 6000x1200, which #182 measured as specks at wall
+// distance -- the characters were unreadable, which defeats the entire effect.
+// 48 gives ~53px cells: about 113 columns by 22 rows on the wall, close to
+// donut.c's own 80x22 and legible across a room.
+const CELL_PX = 48
 
 const FRAG = /* glsl */ `#version 300 es
 precision highp float;
@@ -45,102 +50,275 @@ uniform vec2 uAngles;      // the two rotation angles
 uniform vec2 uTorus;       // r1 (tube), r2 (ring)
 uniform vec3 uPhase;
 uniform float uLumaScale;
+uniform float uSeed;       // per-activation, decorrelates the per-slot hashes
+uniform float uMixShapes;  // 0 = all tori, 1 = mixed solids
+uniform float uCov[${RAMP.length}];  // measured ink coverage per ramp glyph, ascending
 out vec4 fragColor;
 
 ${GLSL.palette}
 
+// Ordered dither, 4x4. Built by interleaving the bits of y and x^y, which gives
+// all sixteen values exactly once -- what matters for a dither is that the
+// thresholds are distinct and well spread, not the particular permutation.
+float bayer4(ivec2 c) {
+  int x = c.x & 3;
+  int y = c.y & 3;
+  int a = x ^ y;
+  int v = ((a & 2) >> 1) | (y & 2) | ((a & 1) << 2) | ((y & 1) << 3);
+  return float(v) / 16.0;
+}
+
+float hash11(float p) {
+  p = fract(p * 0.1031);
+  p *= p + 33.33;
+  p *= p + p;
+  return fract(p);
+}
+
+// Half-extent of the largest solid, in the un-scaled local space. The torus is
+// the widest at tube + ring.
+const float OBJ_EXTENT = 1.34;
+
+float sdTorus(vec3 p, vec2 t) {
+  vec2 q = vec2(length(p.xz) - t.y, p.y);
+  return length(q) - t.x;
+}
+
+float sdRoundBox(vec3 p, vec3 b, float r) {
+  vec3 q = abs(p) - b;
+  return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0) - r;
+}
+
+float sdOctahedron(vec3 p, float s) {
+  p = abs(p);
+  return (p.x + p.y + p.z - s) * 0.57735027;
+}
+
+// The solid occupying one slot. variant picks the shape, prop its
+// proportions; both come from the slot's own hash, so no two slots agree.
+float slotSolid(vec3 p, float variant, float prop) {
+  if (variant < 0.55 || uMixShapes < 0.5) {
+    // Torus. prop widens the tube and narrows the ring, so slots range from a
+    // fat doughnut to a thin ring without ever closing the hole.
+    float tube = mix(0.26, 0.44, prop);
+    float ring = mix(1.02, 0.82, prop);
+    return sdTorus(p, vec2(tube * uTorus.x / 0.39, ring * uTorus.y / 0.95));
+  } else if (variant < 0.8) {
+    return sdRoundBox(p, vec3(mix(0.55, 0.8, prop), mix(0.8, 0.55, prop), 0.55), 0.12);
+  }
+  return sdOctahedron(p, mix(1.1, 1.45, prop));
+}
+
 void main() {
   // Character grid. Cells are square in pixels, so the glyphs are undistorted
-  // at any aspect and a 5:1 wall simply gets many more columns -- the issue
-  // warns against a fixed 80x22, which would letterbox the torus into a blob.
+  // at any aspect and a 5:1 wall simply gets many more columns.
   vec2 cell = floor(gl_FragCoord.xy / uCellPx);
   vec2 cellUv = fract(gl_FragCoord.xy / uCellPx);
   vec2 cells = floor(uResolution / uCellPx);
 
-  // Normalised cell centre, scaled by the SHORT axis so the torus stays
-  // circular rather than stretching across a wide grid.
+  // Normalised cell centre, scaled by the SHORT axis so solids stay round.
   vec2 p = (cell + 0.5 - cells * 0.5) / (min(cells.x, cells.y) * 0.5);
-
-  // Scale so the torus fills the short axis with a margin. It spans roughly
-  // +/-(r2 + r1) ~ 1.4 world units, so the visible range is a little wider than
-  // that and no more. An earlier 2.6 left it as a small central patch.
   p *= 1.55;
 
-  // Repeat across the width on a wide canvas.
+  // A ROW OF DISTINCT SOLIDS, NOT ONE TORUS REPEATED.
   //
-  // Sizing to the short axis alone is correct for keeping the torus round, but
-  // on the 5:1 wall it leaves a single doughnut occupying 16% of the width and
-  // 84% of the display empty -- the letterboxing issue #89 explicitly warns
-  // about. Tiling the world horizontally fills the wall with a row of
-  // doughnuts, all identical and all round, instead of stretching one.
+  // The previous version folded x with mod() into a 3.4-unit cell, so a 5:1 wall
+  // got the same doughnut stamped five times at identical phase -- five copies
+  // tumbling in lockstep, which reads as a rendering fault rather than a design
+  // (#182). The fold is gone.
+  //
+  // The width is divided into slots and each slot gets its OWN solid: its own
+  // shape, proportions, spin phase, scale, vertical offset and depth, all drawn
+  // from a hash of the slot index. Cost is unchanged -- still one distance
+  // function per march step -- because a fragment only ever belongs to one slot.
+  // What changes is that no two slots look alike or move together.
+  //
+  // Slot width follows from the SOLID's size, not the other way round. A solid's
+  // half-extent is about 1.34 world units and the vertical half-span is 1.55, so
+  // HEIGHT caps how large it can be -- the frame is 1200px tall however wide the
+  // wall is. Choosing slots first and fitting solids into them (the first attempt
+  // here) produced five small solids adrift in a mostly black frame, which trades
+  // #182's tiling complaint for its emptiness complaint. Sizing the solid to the
+  // height and then laying out as many slots as fit gives about nine across the
+  // wall, nearly touching.
   float halfSpanX = 1.55 * (cells.x / min(cells.x, cells.y));
-  float tile = 3.4;
-  if (halfSpanX > tile * 0.5) {
-    // Fold x into a repeating cell centred on 0, so each copy is identical.
-    p.x = mod(p.x + tile * 0.5, tile) - tile * 0.5;
-  }
+  float maxScale = 1.42 / OBJ_EXTENT;
+  float wanted = OBJ_EXTENT * maxScale * 1.24;   // 24% air between neighbours
+  float slots = max(1.0, floor(halfSpanX * 2.0 / wanted));
+  float slotW = (halfSpanX * 2.0) / slots;       // redistributed to fill exactly
+  // Clamped defensively. The rightmost cell lands very close to
+  // 2*halfSpanX/slotW = slots, and a cell landing ON it would get slot index
+  // slots -- one past the last -- whose centre sits outside the frame, showing a
+  // solid sliced off at the edge.
+  //
+  // In practice it does not happen: p.x maxes out at halfSpanX - 1.55/cells.y,
+  // just short of the boundary, and measuring ink in the last 40px was identical
+  // with and without this clamp (0.01% of pixels, peak 0.298). Kept because it
+  // costs one instruction and the margin depends on cells.y, which changes with
+  // resolution.
+  float sIdx = clamp(floor((p.x + halfSpanX) / slotW), 0.0, slots - 1.0);
+  float sCentre = -halfSpanX + (sIdx + 0.5) * slotW;
 
-  // Ray-march the torus. Cheaper and sharper than donut.c's point-splat
-  // approach at this resolution, and it gives a real surface normal for the
-  // shading, which is what the luminance ramp needs.
-  float ca = cos(uAngles.x), sa = sin(uAngles.x);
-  float cb = cos(uAngles.y), sb = sin(uAngles.y);
-  mat3 rotA = mat3(1.0, 0.0, 0.0, 0.0, ca, -sa, 0.0, sa, ca);
-  mat3 rotB = mat3(cb, 0.0, sb, 0.0, 1.0, 0.0, -sb, 0.0, cb);
-  mat3 rot = rotB * rotA;
+  float h0 = hash11(sIdx * 7.13 + uSeed * 131.7);
+  float h1 = hash11(sIdx * 3.71 + uSeed * 57.3 + 11.0);
+  float h2 = hash11(sIdx * 5.17 + uSeed * 23.9 + 29.0);
+  float h3 = hash11(sIdx * 11.9 + uSeed * 91.1 + 47.0);
 
-  vec3 ro = vec3(p, -4.0);
+  // Depth. Farther solids are smaller, dimmer and cooler, which is what makes
+  // the row read as a scene with space in it rather than as a line of stickers.
+  float depth = h2;                       // 0 = near, 1 = far
+  // Depth changes size and brightness, but gently: at 0.62 the far solids were
+  // small AND dim enough to read as afterthoughts rather than as distance.
+  float scale = maxScale * mix(1.0, 0.82, depth) * mix(0.95, 1.04, h3);
+  // Never wider than the slot, whatever the hashes ask for.
+  scale = min(scale, (slotW * 0.5) / OBJ_EXTENT * 0.96);
+
+  vec2 local = vec2(p.x - sCentre, p.y + mix(-0.1, 0.1, h1));
+  vec3 ro = vec3(local / scale, -4.0);
   vec3 rd = vec3(0.0, 0.0, 1.0);
-  float lum = 0.0;
+
+  // Each slot spins on its own phase offset, so the row never pulses together.
+  float aOff = h0 * 6.2831;
+  float bOff = h1 * 6.2831;
+  float ca = cos(uAngles.x + aOff), sa = sin(uAngles.x + aOff);
+  float cb = cos(uAngles.y + bOff), sb = sin(uAngles.y + bOff);
+  mat3 rot = mat3(cb, 0.0, sb, 0.0, 1.0, 0.0, -sb, 0.0, cb)
+           * mat3(1.0, 0.0, 0.0, 0.0, ca, -sa, 0.0, sa, ca);
+
+  float variant = h3;
+  float prop = h0;
+
   float t = 0.0;
   bool hit = false;
-  vec3 nrm = vec3(0.0);
+  vec3 hitPos = vec3(0.0);
   for (int i = 0; i < 48; i++) {
     vec3 pos = rot * (ro + rd * t);
-    // Torus SDF.
-    vec2 q = vec2(length(pos.xz) - uTorus.y, pos.y);
-    float d = length(q) - uTorus.x;
-    if (d < 0.002) {
-      hit = true;
-      // Gradient of the torus SDF gives the normal.
-      vec2 qq = vec2(length(pos.xz) - uTorus.y, pos.y);
-      vec3 n = normalize(vec3(pos.x * qq.x / max(length(pos.xz), 1e-4),
-                              qq.y,
-                              pos.z * qq.x / max(length(pos.xz), 1e-4)));
-      nrm = n;
-      break;
-    }
+    float d = slotSolid(pos, variant, prop);
+    if (d < 0.002) { hit = true; hitPos = pos; break; }
     if (t > 9.0) break;
     t += d * 0.7;
   }
 
   if (!hit) {
-    // Background: dim ground rather than black (issue #88).
-    vec3 bg = palettePerceptual(0.72, uPhase) * 0.04;
+    // Dim ground rather than black (#88), but only just: the contrast between
+    // bright glyphs and a near-black field is what survives ambient washout.
+    vec3 bg = palettePerceptual(0.72, uPhase) * 0.02;
     fragColor = vec4(bg, 1.0);
     return;
   }
 
-  // Lambert against a fixed light, the same lighting model donut.c uses.
-  vec3 lightDir = normalize(vec3(0.0, 0.7, -0.7));
-  lum = clamp(dot(nrm, lightDir), 0.0, 1.0);
+  // Normal by central differences on the distance function, so it is correct for
+  // every shape rather than only the torus.
+  float e = 0.004;
+  vec3 nrm = normalize(vec3(
+    slotSolid(hitPos + vec3(e, 0.0, 0.0), variant, prop) - slotSolid(hitPos - vec3(e, 0.0, 0.0), variant, prop),
+    slotSolid(hitPos + vec3(0.0, e, 0.0), variant, prop) - slotSolid(hitPos - vec3(0.0, e, 0.0), variant, prop),
+    slotSolid(hitPos + vec3(0.0, 0.0, e), variant, prop) - slotSolid(hitPos - vec3(0.0, 0.0, e), variant, prop)));
 
-  // Index the ramp. floor() rather than a smooth blend: quantisation into
-  // discrete characters is the entire point of the effect.
-  float idx = floor(lum * (uRampLen - 0.001));
-  vec2 atlasUv = vec2((idx + cellUv.x) / uRampLen, 1.0 - cellUv.y);
+  // Ambient occlusion from the distance function: three taps along the normal.
+  // This is what darkens the inside of the doughnut hole, where the surface
+  // faces its own opposite side and a plain Lambert term reports full light.
+  float ao = 0.0;
+  for (int k = 1; k <= 3; k++) {
+    float len = 0.06 * float(k);
+    ao += max(0.0, len - slotSolid(hitPos + nrm * len, variant, prop)) / len;
+  }
+  ao = clamp(1.0 - ao * 0.42, 0.25, 1.0);
+
+  // Key plus fill plus a specular, instead of donut.c's single Lambert. The ramp
+  // is expressing the shading, so better shading is directly more ASCII detail.
+  vec3 keyDir = normalize(vec3(-0.35, 0.75, -0.65));
+  vec3 fillDir = normalize(vec3(0.7, -0.25, -0.5));
+  float key = max(0.0, dot(nrm, keyDir));
+  float fill = max(0.0, dot(nrm, fillDir)) * 0.32;
+  vec3 halfV = normalize(keyDir + vec3(0.0, 0.0, -1.0));
+  float spec = pow(max(0.0, dot(nrm, halfV)), 22.0) * 0.55;
+  float lum = clamp((key + fill) * ao + spec, 0.0, 1.0);
+  // Farther solids read dimmer, which is the depth cue doing double duty as the
+  // reason the ramp differs between slots.
+  lum *= mix(1.0, 0.84, depth);
+
+  // PERCEPTUALLY EVEN RAMP, WITH DITHERING BETWEEN STEPS.
+  //
+  // The donut.c ramp is not even: measured ink coverage jumps unevenly from '.'
+  // to '@', so a linear index terraces the shading into visible bands. uCov
+  // holds each glyph's measured coverage, ascending, so luminance is matched
+  // against real coverage instead of position. The dither then picks between the
+  // two bracketing glyphs per cell, which turns the remaining step into noise
+  // the eye integrates rather than a contour line.
+  int lo = 0;
+  for (int i = 0; i < ${RAMP.length} - 1; i++) {
+    if (uCov[i + 1] <= lum) lo = i + 1;
+  }
+  int hi = min(lo + 1, ${RAMP.length} - 1);
+  float span = max(uCov[hi] - uCov[lo], 1e-4);
+  float frac = clamp((lum - uCov[lo]) / span, 0.0, 1.0);
+  int idx = (frac > bayer4(ivec2(cell))) ? hi : lo;
+
+  vec2 atlasUv = vec2((float(idx) + cellUv.x) / uRampLen, 1.0 - cellUv.y);
   float glyph = texture(uAtlas, atlasUv).r;
 
-  // Phosphor green by default, rotated per activation.
-  vec3 col = palettePerceptual(0.35 + lum * 0.25, uPhase) * glyph;
-  // Brighter glyphs for brighter surfaces, so the ramp reads as shading and
-  // not just as different characters.
-  col *= 0.45 + 0.75 * lum;
+  // Colour carries depth: near solids warm amber, far ones cooler green. The
+  // hue is a function of depth and luminance rather than one flat red.
+  float hue = mix(0.12, 0.38, depth) + lum * 0.06;
+  vec3 col = palettePerceptual(hue, uPhase) * glyph;
+  // Bright enough to read at 12% washout. The old 0.45 + 0.75*lum peaked barely
+  // above the background; the floor here keeps even the darkest glyph legible
+  // and the gain puts lit faces well clear of an ambient wash.
+  col *= 0.85 + 2.1 * lum;
   col *= uLumaScale;
 
   fragColor = vec4(col, 1.0);
 }
 `
+
+/**
+ * Measured ink coverage of each ramp glyph, ascending, normalised to 0..1.
+ *
+ * The donut.c ramp `.,-~:;=!*#$@` is ordered by eye, not by area, and the gaps
+ * between steps are uneven -- which is what terraces the shading into visible
+ * bands when luminance is mapped to a ramp INDEX (#182). Measuring the atlas the
+ * shader actually samples gives the real quantity to match luminance against.
+ *
+ * Read from the same canvas that was uploaded, so the numbers describe the
+ * texture in use rather than an assumption about the font. The atlas is white
+ * glyphs on opaque black and the shader reads .r, so the mean red channel over a
+ * cell IS the coverage the shader sees.
+ *
+ * Ends are pinned to 0 and 1 after normalising: the darkest glyph must be
+ * reachable at lum 0 and the brightest at lum 1, or the extremes never appear.
+ *
+ * @param {HTMLCanvasElement} atlas
+ * @param {string} chars
+ * @param {number} cellPx
+ * @returns {Float32Array|null} null when the canvas cannot be read back
+ */
+function rampCoverage (atlas, chars, cellPx) {
+  const ctx = atlas.getContext('2d')
+  if (!ctx) return null
+  const cov = new Float32Array(chars.length)
+  for (let i = 0; i < chars.length; i++) {
+    let sum = 0
+    const { data } = ctx.getImageData(i * cellPx, 0, cellPx, cellPx)
+    for (let k = 0; k < data.length; k += 4) sum += data[k]
+    cov[i] = sum / (255 * cellPx * cellPx)
+  }
+  const lo = cov[0]
+  const hi = cov[chars.length - 1]
+  const span = hi - lo
+  // A degenerate atlas (every glyph identical) would divide by ~zero; fall back
+  // to an even ramp, which is what the shader did before this existed.
+  if (!(span > 1e-4)) {
+    for (let i = 0; i < cov.length; i++) cov[i] = i / (cov.length - 1)
+    return cov
+  }
+  for (let i = 0; i < cov.length; i++) {
+    cov[i] = Math.min(1, Math.max(0, (cov[i] - lo) / span))
+  }
+  cov[0] = 0
+  cov[cov.length - 1] = 1
+  return cov
+}
 
 export default {
   name: 'ASCII Doughnut',
@@ -159,6 +337,14 @@ export default {
     const r2 = rng.range(0.85, 1.05)
     const cellScale = rng.range(0.85, 1.25)
     const palettePhase = [rng.next(), 0.33 + rng.next() * 0.2, 0.67 + rng.next() * 0.2]
+    // Slot hashes are decorrelated per activation, so the same row of solids
+    // never recurs.
+    const slotSeed = rng.next() * 97.0
+    // Two thirds of activations are a row of doughnuts in varied proportions;
+    // the rest mix in boxes and octahedra. Keeping tori dominant matters -- this
+    // saver is called ASCII Doughnut, and #182 asked for variety, not a different
+    // screensaver.
+    const mixShapes = rng.chance(0.34) ? 1 : 0
 
     return {
       start() {
@@ -174,6 +360,10 @@ export default {
         const atlas = buildGlyphAtlas(RAMP, { cellPx: GLYPH_PX })
         if (!atlas) throw new Error('ASCII doughnut: no 2D context for the glyph atlas')
         atlasTex = uploadGlyphAtlas(gl, atlas, RAMP)
+        // Measured after upload, from the same canvas, so the ramp the shader
+        // matches against describes the texture it is sampling.
+        const coverage = rampCoverage(atlas, RAMP, GLYPH_PX) ||
+          Float32Array.from(RAMP, (_, i) => i / (RAMP.length - 1))
 
         runtime.start((time) => {
           const cellPx = CELL_PX * cellScale *
@@ -192,6 +382,9 @@ export default {
             g.uniform2f(u('uTorus'), r1, r2)
             g.uniform3f(u('uPhase'), palettePhase[0], palettePhase[1], palettePhase[2])
             g.uniform1f(u('uLumaScale'), lumaScale)
+            g.uniform1f(u('uSeed'), slotSeed)
+            g.uniform1f(u('uMixShapes'), mixShapes)
+            g.uniform1fv(u('uCov'), coverage)
           })
         })
       },
