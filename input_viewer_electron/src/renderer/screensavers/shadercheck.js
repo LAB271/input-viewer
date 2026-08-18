@@ -184,6 +184,23 @@ const UNIFORM_SPREAD_MIN = 0.02
 // touched. Warning keeps it visible without holding the repo hostage.
 const STALE_RATIO = 4.0
 
+// Minimum undulation for a saver whose baseline sits below STRUCTURE_MIN_ABS_DROP
+// (#235). Those savers cannot be protected by the density rule -- a drop to zero is
+// smaller than the absolute margin -- and #229's spread check catches only a
+// UNIFORM frame, not a smooth gradient.
+//
+// Applies to sub-margin savers only, which today is Plasma alone and is asserted
+// by a test. Deliberately not applied to every saver: the lowest undulation among
+// savers with a non-zero baseline is Julia Set at 0.1544, so a set-wide floor
+// would sit within 1.3x of a healthy saver. That is the same 2-3x margin that made
+// the coarse-stride approach unshippable, and it is no more acceptable here.
+//
+// 0.12 gives Plasma a 4.9x margin against its worst measured seed (0.5908, already
+// a minimum across seeds), while a monotonic ramp scores 0.0000. If another saver
+// ever drops below the absolute margin, measure its undulation before trusting
+// this: Julia Set at 0.1544 would clear 0.12 by only 1.3x.
+const UNDULATION_MIN = 0.12
+
 /**
  * Read back the rendered frame and report NaN, negative and blown-out pixels.
  *
@@ -244,6 +261,45 @@ function inspectPixels(gl, chain) {
   const edgeDensity = comparisons === 0 ? 0 : edges / comparisons
 
 
+  // Undulation: how often the signed slope reverses along a row, at a coarse
+  // stride (#235). A flat gradient is MONOTONIC -- its signed difference never
+  // changes sign -- while a real image, however smooth, reverses constantly.
+  //
+  // That is the property the other two measures cannot see. A ramp and a healthy
+  // Plasma frame have almost the same edge density (both near zero, because
+  // neither has hard edges) and almost the same luminance spread (both wide), so
+  // to those two statistics they are the same picture. Measured across all 30:
+  // Plasma undulates at 0.59, a ramp at 0.00.
+  //
+  // Two strides, and the MAX of them, because one alone is not enough: Falling
+  // Sand reads 0.5833 at stride 4 and 0.0000 at stride 16, since its grains are
+  // finer than the coarse step. Taking the max keeps a sparse saver from looking
+  // monotonic just because the stride overshot its features.
+  //
+  // Near-zero differences are skipped -- in a sparse saver most of a row is flat
+  // background, and the sign of numerical noise would otherwise dominate.
+  //
+  // MUST be computed before lums is sorted. A sorted array is monotonic by
+  // definition, so measuring after the sort reads 0.0000 for every saver, which
+  // is exactly the wrong answer in the most convincing possible form.
+  const undulByStride = {}
+  for (const stride of [4, 16]) {
+    let flips = 0, counted = 0
+    for (let y = 0; y < h; y += 4) {
+      let prevSign = 0
+      for (let x = stride; x < w; x += stride) {
+        const d = lums[y * w + x] - lums[y * w + x - stride]
+        if (Math.abs(d) < 0.004) continue
+        const sign = d > 0 ? 1 : -1
+        counted++
+        if (prevSign !== 0 && sign !== prevSign) flips++
+        prevSign = sign
+      }
+    }
+    undulByStride[stride] = counted === 0 ? 0 : flips / counted
+  }
+  const undulation = Math.max(undulByStride[4], undulByStride[16])
+
   lums.sort()
   const p05 = lums[Math.floor(0.05 * (total - 1))]
   const peak = lums[total - 1]
@@ -265,7 +321,7 @@ function inspectPixels(gl, chain) {
   //               a real subject registers and an outlier does not.
   const p999 = lums[Math.floor(0.999 * (total - 1))]
   const spread = p999 - p05
-  return { total, nan, negative, blown, lit, p05, p999, peak, spread, edgeDensity, hdr: Boolean(hdr) }
+  return { total, nan, negative, blown, lit, p05, p999, peak, spread, edgeDensity, undulation, hdr: Boolean(hdr) }
 }
 
 /** Turn pixel stats into a failure message, or null when the frame looks sane. */
@@ -297,6 +353,19 @@ function pixelProblem(s, name) {
       `${UNIFORM_SPREAD_MIN} (p05 ${s.p05.toFixed(4)}, p99.9 ${s.p999.toFixed(4)}). ` +
       'The frame renders and is not black, but nothing varies across it -- a ' +
       'flattened display pass, or a simulation that never started.'
+  }
+
+  // Monotonicity, for the savers the density rule cannot reach (#235). A frame that
+  // only ever slopes one way along a row is a gradient, not a picture -- which is
+  // the #192 failure, where Physarum's simulation was correct and its display pass
+  // rendered a flat ramp.
+  if (typeof baseline === 'number' && baseline > 0 && baseline <= STRUCTURE_MIN_ABS_DROP &&
+      s.undulation < UNDULATION_MIN) {
+    return `frame is monotonic: undulation ${s.undulation.toFixed(4)} is below ` +
+      `${UNDULATION_MIN}. The luminance slopes one way along each row and barely ` +
+      'reverses, which is a gradient rather than an image -- a flattened display ' +
+      `pass. This saver's baseline (${baseline}) is under the absolute margin, so ` +
+      'the edge-density rule cannot see it.'
   }
 
   if (typeof baseline === 'number' && baseline > 0) {
@@ -382,7 +451,13 @@ async function run() {
         if (problem) error = `pixel check: ${problem}`
       }
       results.push({ name, seed: String(seed), error, pixels })
-      if (error) log(`FAIL  ${name} (seed ${seed})\n${error}\n`)
+      // Single line, deliberately. scripts/shader-check.mjs extracts console output
+      // with a per-line regex against Chrome's INFO:CONSOLE(n] "..." format, so a
+      // MULTI-LINE message is dropped entirely -- its first line has no closing
+      // quote and the rest have no prefix. This log was multi-line, which is why a
+      // failed run showed "FAILING SAVERS: Plasma" in CI with no reason attached,
+      // and why the reason could only be recovered by reading the page.
+      if (error) log(`FAIL  ${name} (seed ${seed}): ${String(error).replace(/\s*\n\s*/g, ' | ')}`)
     }
   }
 
@@ -414,6 +489,15 @@ async function run() {
     }
   }
   console.log('SHADERCHECK_STALE ' + JSON.stringify(stale))
+
+  const undulOut = {}
+  for (const r of results) {
+    if (!r.pixels || typeof r.pixels.undulation !== 'number') continue
+    const prev = undulOut[r.name]
+    undulOut[r.name] = prev === undefined ? r.pixels.undulation
+      : Math.min(prev, r.pixels.undulation)
+  }
+  console.log('SHADERCHECK_UNDUL ' + JSON.stringify(undulOut))
 
   if (stale.length) {
     log(`\n--- ${stale.length} stale baseline(s): measured density is over ${STALE_RATIO}x from the baseline ---`)
