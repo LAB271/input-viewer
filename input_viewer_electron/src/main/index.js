@@ -9,6 +9,35 @@ const { exec } = require('child_process')
 app.commandLine.appendSwitch('ignore-gpu-blocklist')
 app.commandLine.appendSwitch('enable-gpu-rasterization')
 
+// Test-mode launch flags (#248): --mock, --no-signal, --screensaver-delay.
+//
+// Main does not parse these, it only forwards the arguments that could be them.
+// Parsing lives in src/renderer/test-flags.js, which is ESM and unit tested;
+// main is CommonJS and cannot import it, and duplicating the parser here is how
+// the two would drift.
+//
+// This filter is deliberately LOOSER than the parser's list of known flags, so
+// that a typo (`--mocks`, `--nosignal`) still reaches the renderer and gets
+// reported as unrecognised. A filter that only passed exact matches would make
+// a mistyped flag indistinguishable from an absent one -- silence at the wall,
+// which is the failure this whole feature exists to avoid.
+//
+// Only argument-shaped strings are forwarded, never the full argv: the renderer
+// has no need for the executable path or the app directory.
+const TEST_FLAG_SHAPE = /^--(mock|no.?signal|screensaver)/i
+
+function testFlagArgs() {
+  const args = process.argv.filter(arg => TEST_FLAG_SHAPE.test(arg))
+  // Logged from main because main's stdout is the terminal the operator is
+  // looking at; the renderer's console is behind devtools. Without this, a flag
+  // that never reached the app and a flag that was rejected by the parser look
+  // identical from outside.
+  if (args.length > 0) {
+    console.log(`[TestFlags] forwarding to renderer: ${args.join(' ')}`)
+  }
+  return args
+}
+
 // Keep a global reference of the window object
 let mainWindow
 
@@ -359,6 +388,12 @@ ipcMain.handle('get-settings-path', () => {
 // Get app version for display in UI
 ipcMain.handle('get-app-version', () => {
   return getAppVersion()
+})
+
+// Test-mode launch flags (#248). Returns the raw candidate arguments; the
+// renderer parses and reports on them.
+ipcMain.handle('get-test-flag-args', () => {
+  return testFlagArgs()
 })
 
 // Get system volume (0-100)

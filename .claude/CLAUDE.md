@@ -71,7 +71,66 @@ npm run bench -- --size 6000x1200 --seconds 8
 
 # Regenerate the shadercheck structure baselines. READ THE CAVEAT BELOW FIRST.
 npm run baselines
+
+# Test-mode launch flags (#248). Reach the no-signal board and the screensavers
+# without unplugging a capture card. Note the bare `--`: everything after it is
+# forwarded to Electron rather than consumed by electron-vite.
+npm run dev -- -- --no-signal                      # split-flap board, immediately
+npm run dev -- -- --mock                           # 4 synthetic inputs, no hardware
+npm run dev -- -- --mock=2 --no-signal             # 2 inputs, both dark
+npm run dev -- -- --no-signal --screensaver-delay=0  # straight to a screensaver
+
+# The same flags against an installed build, which is how you would use them on
+# the wall itself rather than on a dev machine.
+open -a 'Input Viewer' --args --no-signal --screensaver-delay=0
 ```
+
+### The test-mode launch flags (#248)
+
+| Flag | Effect |
+|---|---|
+| `--mock[=N]` | N synthetic inputs (1-8, default 4). No capture hardware, no camera permission prompt. |
+| `--no-signal` | Pins every input into the no-signal state, so the split-flap board is up from launch. |
+| `--screensaver-delay=MS` | Replaces the five-minute wait. `0` starts a saver as soon as the state is reached. |
+
+Orthogonal on purpose. `--no-signal` alone is the fast path to the board on any
+machine; adding `--mock` gives you named inputs to switch between while they are
+all dark, which is what exercises the per-side transitions rather than just the
+initial state.
+
+Three things worth knowing before using these:
+
+**`--mock` never writes settings.** `saveSettings()` returns early in mock mode.
+Without that guard one mock run would persist `mock-input-1`..`mock-input-4` into
+the real `settings.json` and could leave `defaultInputId` pointing at a device
+that will never exist again -- the next production launch would start on a dead
+input. Renames and enable/disable still work in mock mode, they just stay in
+memory.
+
+**`--no-signal` is enforced in exactly one place:** `hideNoSignal()` returns
+early. Every path that would clear the overlay -- a stream starting, detection
+reporting signal restored, an input switch -- goes through there, so one guard
+covers all of them. Do not push that check out to the call sites; that is how one
+gets missed and the forced state silently un-forces itself.
+
+Separately, the flag also stops the detection loop from starting at all, rather
+than letting it run and discarding every verdict. Otherwise each cycle would pay
+a GPU readback for a result `hideNoSignal()` then refuses to act on, and would
+log a "signal restored" that never happens.
+
+**Mock inputs are real MediaStreams**, from `canvas.captureStream()`, not a stub
+in front of the video elements. They flow through `srcObject`, `readyState`,
+`getVideoTracks()`, the `MediaStreamTrackProcessor` in `frame-source.js` and the
+downscale, so detection cannot tell one from a capture card. That is the point:
+a stub would only prove the UI renders.
+
+Parsing lives in `src/renderer/test-flags.js`, apart from both processes, because
+it is the one part that is pure and therefore unit tested. Main forwards
+candidate arguments without parsing them (it is CommonJS and cannot import the
+ESM parser); its filter is deliberately looser than the parser's known-flag list
+so a typo like `--nosignal` still reaches the renderer and gets logged as
+unrecognised. A flag that silently does nothing means someone at the wall is
+looking at a production-mode screen believing it is in test mode.
 
 ### shadercheck forces SwiftShader; bench deliberately does not
 

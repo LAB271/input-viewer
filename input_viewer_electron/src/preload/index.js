@@ -21,6 +21,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // App info
   getAppVersion: () => ipcRenderer.invoke('get-app-version'),
 
+  // Test-mode launch flags (#248). Returns the argument strings that could be
+  // test flags; the renderer parses them with test-flags.js.
+  getTestFlagArgs: () => ipcRenderer.invoke('get-test-flag-args'),
+
   // System volume control
   getSystemVolume: () => ipcRenderer.invoke('get-system-volume'),
   setSystemVolume: (volume) => ipcRenderer.invoke('set-system-volume', volume),
