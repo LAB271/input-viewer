@@ -813,7 +813,12 @@ kbd {
 
 .column-layout {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  /* minmax(0, 1fr), not 1fr. `1fr` is minmax(auto, 1fr) and the auto minimum is
+     the item's min-content size, so any descendant that cannot wrap pins the
+     track open. A `white-space: nowrap` device name did exactly that: the tracks
+     computed to 339.758px each inside a 358px panel and the columns overflowed
+     the dropdown by ~320px. Same trap as flex `min-width: auto`, one level up. */
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 12px;
   margin-bottom: 16px;
 }
@@ -1230,7 +1235,11 @@ kbd {
 
 /* The name takes the room the chip does not, so a long device label truncates
    instead of pushing the chip out of the row. */
-.input-option-name,
+/* Truncation applies only where a chip shares the row -- the single-view list.
+   The dual columns carry no chip (see buildOption in renderer.js: the number keys
+   set both feeds, so a per-side row must not advertise one), so their names wrap
+   as they did before the chips existed. At ~173px a column has no room to both
+   truncate and stay readable. */
 .single-input-option .input-option-name {
   /* min-width:0 is what actually lets a flex item shrink below its content
      width; without it the default min-width:auto keeps the name at full size and

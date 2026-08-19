@@ -96,7 +96,7 @@ Four consumers read from it, and none of them keeps its own copy:
 | Consumer | How |
 |---|---|
 | the keydown handler | `SHORTCUTS_BY_KEY.get(event.key.toLowerCase())`, then `SHORTCUT_ACTIONS[id]` |
-| the dropdown | `renderShortcutHints()` labels Dual/Single; the input rows get `inputKeyFor(index)` |
+| the dropdown | `renderShortcutHints()` labels Dual/Single; the **single-view** input rows get `inputKeyFor(index)` |
 | the Settings table | `renderShortcutHints()` fills `#shortcuts-table`, which ships empty |
 | `README.md` and `docs/USER_GUIDE.md` | still hand-written, but a test asserts every chip appears in both |
 
@@ -121,6 +121,26 @@ Two things about the UI side worth not re-learning:
 Past the fourth input row `inputKeyFor()` returns null and no chip is drawn. The
 wall can have more capture devices than there are number keys, and labelling a
 fifth row `5` would promise a binding that does not exist.
+
+**The dual columns carry no chip, and that is about correctness, not space.**
+`1`-`4` call `selectInput()` with the default `side='both'` and set BOTH feeds;
+clicking a row in the Left column calls `selectInputForSide(id, 'left')` and sets
+one. A chip on a per-side row documents a key that does something different from
+the control beside it. In single view one feed is shown, so setting both and
+setting that one are the same thing to the operator, and the chip is honest.
+
+It was reported as a fit bug in dual view, and it was that as well. Two things had
+to be fixed:
+
+- `.column-layout` needed `minmax(0, 1fr)`, not `1fr`. A bare `1fr` is
+  `minmax(auto, 1fr)` and the auto minimum is the item's **min-content** size, so a
+  `white-space: nowrap` name pinned the tracks open: they computed to 339.758px
+  each inside a 358px panel and spilled ~320px out of the dropdown. Same trap as
+  flex `min-width: auto`, one level up — and the flex one was already fixed in this
+  file, which is how the grid one got missed.
+- Name truncation is scoped to `.single-input-option .input-option-name`, the only
+  list with a chip. A ~173px column has no room to both truncate and stay
+  readable, so dual-column names wrap as they did before the chips existed.
 
 ### The test-mode launch flags (#248)
 
