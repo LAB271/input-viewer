@@ -216,14 +216,10 @@
       <!-- Shortcuts Section -->
       <div class="settings-section">
         <h3>Keyboard Shortcuts</h3>
-        <table class="shortcuts-table">
-          <tr><td><kbd>1</kbd>-<kbd>4</kbd></td><td>Select input</td></tr>
-          <tr><td><kbd>D</kbd> / <kbd>S</kbd></td><td>Dual / Single view</td></tr>
-          <tr><td><kbd>Space</kbd></td><td>Freeze frame</td></tr>
-          <tr><td><kbd>F</kbd></td><td>Fullscreen</td></tr>
-          <tr><td><kbd>Esc</kbd></td><td>Exit / Unfreeze</td></tr>
-          <tr><td><kbd>←</kbd><kbd>PgUp</kbd> / <kbd>→</kbd><kbd>PgDn</kbd></td><td>Remote keyboard (if enabled)</td></tr>
-        </table>
+                <!-- Rows are rendered from shortcuts.js (#258). This table was
+             hand-maintained and had drifted: it was missing Q, V, +/- and F11,
+             so the one place documenting the keys omitted four of them. -->
+        <table class="shortcuts-table" id="shortcuts-table"></table>
       </div>
 
       <div class="modal-footer">

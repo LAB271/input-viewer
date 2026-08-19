@@ -53,6 +53,7 @@ The app includes auto-updates and will notify you when new versions are availabl
 | `Q`         | Quit                                |
 | `V`         | Show/hide the screensaver           |
 | `+` / `-`   | Step through the screensavers       |
+| `←` `PgUp` / `→` `PgDn` | Presentation back / forward (if the remote keyboard is enabled) |
 
 `V` starts the screensaver immediately rather than waiting out the five-minute
 no-signal delay, and `+` / `-` step through the set (wrapping at both ends).

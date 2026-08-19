@@ -1133,6 +1133,68 @@ kbd {
    Settings Modal - Shortcuts Table
    ============================================================================= */
 
+/* =============================================================================
+   Shortcut hints (#258)
+   ============================================================================= */
+
+/* The key chip beside a dropdown control. Quieter than the kbd chips in the
+   Settings table -- this is a hint next to a control the operator is already
+   looking at, not a reference they came to read -- but only just.
+   
+   The first attempt used 10px at opacity 0.55, which looked right on a laptop
+   and disappeared entirely on the wall: 6000x1200 in a lit room, and 12px is
+   already this UI's floor for body text. A hint nobody can read fails at the one
+   thing the hints are for, so these are sized off the app's existing 12px rather
+   than shrunk until they stopped competing. */
+.shortcut-hint {
+  margin-left: auto;
+  flex-shrink: 0;
+  opacity: 0.7;
+}
+
+.shortcut-hint kbd {
+  padding: 2px 6px;
+  font-size: 11px;
+}
+
+/* On a selected row or the active view-mode button the chip sits on the accent
+   colour, where a translucent white loses most of its contrast. */
+.input-option.selected .shortcut-hint,
+.single-input-option.selected .shortcut-hint,
+.view-mode-btn.active .shortcut-hint {
+  opacity: 0.9;
+}
+
+.input-option.selected .shortcut-hint kbd,
+.single-input-option.selected .shortcut-hint kbd,
+.view-mode-btn.active .shortcut-hint kbd {
+  background-color: rgba(255, 255, 255, 0.22);
+}
+
+/* Inside a view-mode button the hint follows the label rather than being pushed
+   to the far edge -- the button is centred text, so margin-left:auto would drag
+   the chip away from the word it belongs to. */
+.view-mode-btn .shortcut-hint {
+  margin-left: 6px;
+}
+
+/* The name takes the room the chip does not, so a long device label truncates
+   instead of pushing the chip out of the row. */
+.input-option-name,
+.single-input-option .input-option-name {
+  /* min-width:0 is what actually lets a flex item shrink below its content
+     width; without it the default min-width:auto keeps the name at full size and
+     pushes the chip out of the row instead of ellipsising. */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shortcut-note {
+  color: var(--text-muted);
+}
+
 .shortcuts-table {
   width: 100%;
   font-size: 12px;

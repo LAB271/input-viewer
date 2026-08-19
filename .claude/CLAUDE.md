@@ -85,6 +85,43 @@ npm run dev -- -- --no-signal --screensaver-delay=0  # straight to a screensaver
 open -a 'Input Viewer' --args --no-signal --screensaver-delay=0
 ```
 
+### Keyboard shortcuts live in one list (#258)
+
+`src/renderer/shortcuts.js` is the single source of truth: keys, the chips the UI
+prints, labels, and whether each suppresses the default action. It holds no
+behaviour and imports nothing.
+
+Four consumers read from it, and none of them keeps its own copy:
+
+| Consumer | How |
+|---|---|
+| the keydown handler | `SHORTCUTS_BY_KEY.get(event.key.toLowerCase())`, then `SHORTCUT_ACTIONS[id]` |
+| the dropdown | `renderShortcutHints()` labels Dual/Single; the input rows get `inputKeyFor(index)` |
+| the Settings table | `renderShortcutHints()` fills `#shortcuts-table`, which ships empty |
+| `README.md` and `docs/USER_GUIDE.md` | still hand-written, but a test asserts every chip appears in both |
+
+Adding a key means adding one entry and one action. The entry alone gets you a
+row in the table and a hint in the dropdown with a key that does nothing, and a
+test fails for exactly that.
+
+**Why this is worth the indirection.** There were four lists before, and three had
+drifted. The Settings table was missing `Q`, `V`, `+`/`-` and `F11`; README was
+missing the remote-keyboard row; USER_GUIDE was missing `F11`. Nothing ever
+failed -- they were just quietly wrong for however long nobody looked.
+
+Two things about the UI side worth not re-learning:
+
+- The chips are sized off this UI's 12px floor, not shrunk until they stopped
+  competing. A first pass at 10px / opacity 0.55 read fine on a laptop and was
+  invisible on the wall -- 6000x1200 in a lit room. A test pins the floor.
+- The dropdown rows put the device name in a `<span>` with `min-width: 0`. Without
+  it the flex default of `min-width: auto` holds a long capture-card label at full
+  width and pushes the chip out of the row instead of ellipsising.
+
+Past the fourth input row `inputKeyFor()` returns null and no chip is drawn. The
+wall can have more capture devices than there are number keys, and labelling a
+fifth row `5` would promise a binding that does not exist.
+
 ### The test-mode launch flags (#248)
 
 | Flag | Effect |
