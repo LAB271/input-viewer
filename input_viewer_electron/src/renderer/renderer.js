@@ -1535,14 +1535,25 @@ function renderDropdownInputLists() {
 
     // Name via textContent, never innerHTML: this string is a device label from
     // capture hardware or a user-entered rename.
-    const buildOption = (className, isActive, side) => {
+    //
+    // `showKey` is false for the dual columns, and that is a correctness point
+    // rather than a layout one. `1`-`4` call selectInput() with the default
+    // side='both', which sets BOTH feeds; clicking a row in the Left column calls
+    // selectInputForSide(id, 'left') and sets one. A chip on a per-side row would
+    // therefore document a key that does something different from the control it
+    // sits next to. In single view only one feed is shown, so setting both and
+    // setting that one are the same thing to the operator, and the chip is honest.
+    //
+    // It also fixes the fit: a dual column is ~173px against the single list's
+    // ~358px, and a name plus a chip left about 98px for the name.
+    const buildOption = (className, isActive, side, showKey) => {
       const option = document.createElement('div')
       option.className = `${className}${isActive ? ' selected' : ''}`
       const name = document.createElement('span')
       name.className = 'input-option-name'
       name.textContent = customName
       option.appendChild(name)
-      if (key) option.appendChild(shortcutKeyChip(key))
+      if (key && showKey) option.appendChild(shortcutKeyChip(key))
       option.addEventListener('click', () => {
         selectInputForSide(device.deviceId, side)
       })
@@ -1550,11 +1561,11 @@ function renderDropdownInputLists() {
     }
 
     elements.leftInputList.appendChild(
-      buildOption('input-option', isLeftActive, 'left'))
+      buildOption('input-option', isLeftActive, 'left', false))
     elements.rightInputList.appendChild(
-      buildOption('input-option', isRightActive, 'right'))
+      buildOption('input-option', isRightActive, 'right', false))
     elements.singleInputList.appendChild(
-      buildOption('single-input-option', isLeftActive, 'left'))
+      buildOption('single-input-option', isLeftActive, 'left', true))
   })
 }
 

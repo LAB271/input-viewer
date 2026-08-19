@@ -10,7 +10,9 @@
  * table can never again be a hand-maintained copy that drifts.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { installRendererDom, device } from './helpers/renderer-dom.js'
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
+import { installRendererDom, device, projectRoot } from './helpers/renderer-dom.js'
 
 installRendererDom()
 
@@ -122,32 +124,44 @@ describe('the view-mode buttons', () => {
 })
 
 describe('the dropdown input rows', () => {
-  it('labels the first four rows with 1-4', () => {
+  // Chips go on the SINGLE-view list only.
+  //
+  // Not a layout compromise -- a correctness one. `1`-`4` call selectInput() with
+  // the default side='both' and set BOTH feeds; clicking a row in the Left column
+  // calls selectInputForSide(id, 'left') and sets one. A chip on a per-side row
+  // would document a key that does something different from the control beside it.
+  // In single view one feed is shown, so setting both and setting that one are the
+  // same thing to the operator.
+  //
+  // It was reported as a fit bug in dual view, and it was that too: a dual column
+  // is ~173px against the single list's ~358px.
+
+  it('labels the first four rows of the single-view list with 1-4', () => {
     reset([device('a', 'Cam A'), device('b', 'Cam B'), device('c', 'Cam C'),
       device('d', 'Cam D')])
     renderDropdownInputLists()
-    const chips = [...elements.leftInputList.querySelectorAll('kbd')]
+    const chips = [...elements.singleInputList.querySelectorAll('kbd')]
       .map(k => k.textContent)
     expect(chips).toEqual(['1', '2', '3', '4'])
+  })
+
+  it('puts no chip on the dual columns, where the key means something else', () => {
+    reset([device('a', 'Cam A'), device('b', 'Cam B')])
+    renderDropdownInputLists()
+    expect(elements.leftInputList.querySelectorAll('kbd')).toHaveLength(0)
+    expect(elements.rightInputList.querySelectorAll('kbd')).toHaveLength(0)
+    // The rows themselves are still there and still named.
+    expect([...elements.leftInputList.children].map(r => r.textContent))
+      .toEqual(['Cam A', 'Cam B'])
   })
 
   it('leaves a fifth row unlabelled rather than promising a key', () => {
     reset(['a', 'b', 'c', 'd', 'e'].map(id => device(id, `Cam ${id}`)))
     renderDropdownInputLists()
-    const rows = [...elements.leftInputList.children]
+    const rows = [...elements.singleInputList.children]
     expect(rows).toHaveLength(5)
     expect(rows[4].querySelector('kbd')).toBeNull()
     expect(rows[3].querySelector('kbd').textContent).toBe('4')
-  })
-
-  it('labels all three lists, including single view', () => {
-    reset([device('a', 'Cam A'), device('b', 'Cam B')])
-    renderDropdownInputLists()
-    for (const list of [elements.leftInputList, elements.rightInputList,
-      elements.singleInputList]) {
-      expect([...list.querySelectorAll('kbd')].map(k => k.textContent))
-        .toEqual(['1', '2'])
-    }
   })
 
   it('skips disabled inputs, so the numbering matches what is shown', () => {
@@ -160,7 +174,7 @@ describe('the dropdown input rows', () => {
     state.devices = [device('a', 'Cam A'), device('b', 'Cam B'),
       device('c', 'Cam C')]
     renderDropdownInputLists()
-    const rows = [...elements.leftInputList.children]
+    const rows = [...elements.singleInputList.children]
     expect(rows).toHaveLength(2)
     expect(rows.map(r => r.querySelector('kbd').textContent)).toEqual(['1', '2'])
     expect(rows[1].textContent).toContain('Cam C')
@@ -171,9 +185,46 @@ describe('the dropdown input rows', () => {
     // elements with textContent for exactly this reason.
     reset([device('a', '<img src=x onerror=alert(1)>')])
     renderDropdownInputLists()
-    const row = elements.leftInputList.children[0]
-    expect(row.querySelector('img')).toBeNull()
-    expect(row.textContent).toContain('<img src=x onerror=alert(1)>')
+    for (const list of [elements.leftInputList, elements.singleInputList]) {
+      const row = list.children[0]
+      expect(row.querySelector('img')).toBeNull()
+      expect(row.textContent).toContain('<img src=x onerror=alert(1)>')
+    }
+  })
+})
+
+describe('the dual columns cannot overflow the dropdown', () => {
+  // The reported bug: with a chip forcing `white-space: nowrap` on the name, the
+  // grid's `1fr` tracks -- which are minmax(auto, 1fr), and whose auto minimum is
+  // the item's MIN-CONTENT size -- computed to 339.758px each inside a 358px
+  // panel. The columns spilled ~320px out of the dropdown.
+  //
+  // jsdom does no layout, so this asserts the declaration rather than measuring.
+  // Both halves of the fix are pinned, because either alone would have hidden it.
+  const CSS = readFileSync(
+    path.resolve(projectRoot, 'src/renderer/styles.css'), 'utf8')
+
+  const ruleBody = (selector) => {
+    const re = new RegExp(
+      `${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\{([^}]*)\\}`, 'g')
+    const bodies = [...CSS.matchAll(re)].map(m => m[1])
+    expect(bodies.length, `rule not found: ${selector}`).toBeGreaterThan(0)
+    return bodies.join('\n')
+  }
+
+  it('uses minmax(0, 1fr) so a track can shrink below its content', () => {
+    const body = ruleBody('.column-layout')
+    expect(body).toMatch(/grid-template-columns:\s*minmax\(\s*0\s*,\s*1fr\s*\)/)
+    // A bare `1fr` is the bug.
+    expect(body).not.toMatch(/grid-template-columns:\s*1fr\s+1fr/)
+  })
+
+  it('scopes name truncation to the list that actually has a chip', () => {
+    // Applying nowrap to the dual columns is what pinned the tracks open. Their
+    // names wrap, as they did before the chips existed.
+    expect(ruleBody('.single-input-option .input-option-name'))
+      .toMatch(/white-space:\s*nowrap/)
+    expect(CSS).not.toMatch(/^\.input-option-name,/m)
   })
 })
 
