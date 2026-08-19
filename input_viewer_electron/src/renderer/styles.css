@@ -304,6 +304,53 @@ body.cursor-visible .input-label {
   display: none;
 }
 
+/* =============================================================================
+   Screensaver rotation fade
+   ============================================================================= */
+
+/* Two fades, on two elements, because they are two different transitions.
+   
+   The OVERLAY fades when the screensaver arrives or leaves. It is opaque black
+   over the split-flap board (z-index 25 against the board's 10), so fading the
+   canvas alone would snap the board to black first and only then fade the saver
+   in. Fading the overlay crossfades board and saver directly.
+   
+   The CANVAS fades when one saver is replaced by another. Fading the overlay
+   there would reveal the board underneath mid-rotation, which is wrong -- the
+   feeds have not come back. Dipping the canvas dips to the overlay's own black.
+   
+   Both are live fades: the outgoing saver keeps rendering while it dips, and the
+   incoming one is already running as it comes up. */
+#dvd-overlay {
+  transition: opacity 520ms ease;
+}
+
+#dvd-overlay.fading {
+  opacity: 0;
+}
+
+/* Named saver-swapping, not swapping: `.video-feed video.swapping` is the
+   input-switch fade (#247) and the two must not be confused. */
+#screensaver-canvas.saver-swapping {
+  opacity: 0;
+  /* Out quicker than in. A slow dip to black reads as the wall dying; a slow
+     rise reads as the next thing arriving.
+     
+     `ease` is front-loaded, which suits a dip-and-swap. Measured in a browser:
+     
+       t=0    1.000
+       t=75   0.591
+       t=150  0.198
+       t=225  0.040
+       t=300  0.000
+     
+     So it is already 96% dark a quarter of the way from the end. The swap fires
+     at 0.000, but it would be hidden even if the timer ran early or a frame
+     budget slipped -- the margin is a property of the curve, not luck. A
+     symmetric curve would put the swap much closer to visible. */
+  transition: opacity 300ms ease;
+}
+
 #screensaver-canvas {
   position: absolute;
   top: 0;
@@ -311,6 +358,9 @@ body.cursor-visible .input-label {
   width: 100%;
   height: 100%;
   display: block;
+  /* The fade-IN duration. On the base rule rather than a class so removing
+     .saver-swapping animates back up on its own. */
+  transition: opacity 520ms ease;
 }
 
 /* Experimental WebGPU compositing target (issue #62). Hidden by default; only
