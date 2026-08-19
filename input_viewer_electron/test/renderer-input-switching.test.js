@@ -136,7 +136,43 @@ describe('setLayout', () => {
     expect(state.layoutMode).toBe('single')
     expect(state.settings.layoutMode).toBe('single')
     expect(document.body.classList.contains('single-view')).toBe(true)
-    expect(elements.rightFeed.classList.contains('hidden')).toBe(true)
+    // The right feed COLLAPSES immediately and is display:none'd only once the
+    // transition has finished (#247). It used to be hidden on the same tick; this
+    // assertion changed with the animation, and the one below covers the rest.
+    expect(elements.rightFeed.classList.contains('collapsed')).toBe(true)
+    expect(elements.rightFeed.classList.contains('hidden')).toBe(false)
+  })
+
+  it('hides the collapsed feed once the transition has finished', () => {
+    vi.useFakeTimers()
+    try {
+      resetState()
+      setLayout('single')
+      expect(elements.rightFeed.classList.contains('hidden')).toBe(false)
+      vi.advanceTimersByTime(400)
+      expect(elements.rightFeed.classList.contains('hidden')).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not hide the feed if the switch is reversed mid-animation', () => {
+    // The interruptible case: single -> dual inside the animation window must
+    // cancel the pending hide, or the right feed disappears after the operator has
+    // already switched back to dual.
+    vi.useFakeTimers()
+    try {
+      resetState()
+      setLayout('single')
+      vi.advanceTimersByTime(100)
+      setLayout('dual')
+      vi.advanceTimersByTime(1000)
+      expect(state.layoutMode).toBe('dual')
+      expect(elements.rightFeed.classList.contains('hidden')).toBe(false)
+      expect(elements.rightFeed.classList.contains('collapsed')).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('switches back to dual view and unhides the right feed', () => {
@@ -146,6 +182,7 @@ describe('setLayout', () => {
     expect(state.layoutMode).toBe('dual')
     expect(document.body.classList.contains('single-view')).toBe(false)
     expect(elements.rightFeed.classList.contains('hidden')).toBe(false)
+    expect(elements.rightFeed.classList.contains('collapsed')).toBe(false)
   })
 
   it('marks the matching view-mode button active', () => {
