@@ -51,6 +51,18 @@ void main() {
   outColor = vec4(col, tex.a);
 }`
 
+// Logo height as a fraction of the SHORT axis, which is the one that does not
+// stretch as the canvas gets wider.
+//
+// 0.09-0.12 puts the logo at 108-144px tall on the 6000x1200 wall and, with the
+// image's 3.69 aspect, 398-531px wide -- against 238 x 871 before. Roughly half
+// the linear size, which is what the owner's "the logo is too big" asked for.
+//
+// Note this has been fixed once before: "DVD logo screensaver drawn smaller" in
+// v2.6.2. It came back because the size was anchored to the width, so widening the
+// canvas re-grew it. Anchored here, it cannot.
+const LOGO_H_RANGE = [0.09, 0.12]
+
 const DVD_HUES = [0.0, 1.047, 2.094, 3.142, 4.189, 5.236] // 0,60,...300 deg in rad
 
 export default {
@@ -83,7 +95,9 @@ export default {
       x: startX, y: startY,
       vx: Math.cos(angle) * speed * rng.sign(),
       vy: Math.sin(angle) * speed * rng.sign(), // per second
-      logoW: rng.range(0.10, 0.15), logoH: 0.07,
+      // Sized from the SHORT axis, not the width. See the note by LOGO_H_RANGE.
+      // Both are placeholders until the image loads and the aspect is known.
+      logoH: rng.range(LOGO_H_RANGE[0], LOGO_H_RANGE[1]), logoW: 0.05,
       hueIndex: rng.int(0, DVD_HUES.length - 1),
       lastTime: 0
     }
@@ -148,9 +162,21 @@ export default {
         gl.bindTexture(gl.TEXTURE_2D, texture)
         gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false)
         gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img)
-        // Keep logo aspect ratio: width fixed, height derived.
+        // Keep the logo's pixel aspect: HEIGHT is chosen, width derived.
+        //
+        // This is the reverse of what it used to do, and the reversal is the fix.
+        // Sizing from the width and deriving height means a 5:1 canvas gets a logo
+        // a fifth of the frame TALL: 12% of 6000px is 720px wide, and the derived
+        // height follows it up. Measured at 6000x1200 before this change, the logo
+        // covered 871 x 238 px -- 14.5% of the width and 19.8% of the height, close
+        // to a metre across on the real wall (#117).
+        //
+        // Anchoring to the short axis is what every other saver in this folder
+        // does, and for the same reason: pointScale and particleSide in gl-base.js,
+        // CELL_PX in ascii-donut.js, the cell sizing in truchet.js. A size in
+        // angular terms has to come from the dimension that does not stretch.
         const aspect = img.width / img.height
-        st.logoH = st.logoW / aspect * (canvas.width / canvas.height)
+        st.logoW = st.logoH * aspect * (canvas.height / canvas.width)
       }
       img.src = logoUrl
     }
