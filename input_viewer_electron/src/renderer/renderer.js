@@ -51,6 +51,19 @@ import { observeFrames } from './screensavers/gl-base.js'
 // the no-signal display, not one of the rotating screensavers (#92).
 import splitFlap from './screensavers/split-flap.js'
 
+// Test-mode launch flags (#248).
+import {
+  parseTestFlags,
+  anyTestFlagSet,
+  describeTestFlags,
+  DEFAULT_TEST_FLAGS
+} from './test-flags.js'
+import {
+  mockDeviceList,
+  createMockStream,
+  isMockDeviceId
+} from './mock-capture.js'
+
 // =============================================================================
 // State Management
 // =============================================================================
@@ -77,6 +90,12 @@ const state = {
     left: false,
     right: false
   },
+  // Test-mode launch flags (#248). Defaults are the production values, so every
+  // path below behaves exactly as it did before these flags existed unless one
+  // is actually passed.
+  testFlags: { ...DEFAULT_TEST_FLAGS },
+  // Live mock streams, so they can be stopped on input switch. Keyed by side.
+  mockStreams: { left: null, right: null },
   // DVD screensaver timer
   dvdScreensaverTimeout: null,
   // dvdScreensaverDelay: 10 * 1000, // 10 seconds in milliseconds
@@ -198,6 +217,17 @@ async function loadSettings() {
 }
 
 async function saveSettings() {
+  // Mock mode never writes settings (#248).
+  //
+  // Not a convenience -- a correctness guard. getVideoDevices() creates an
+  // `inputs` entry per discovered device and saveSettings() persists
+  // leftDeviceId/rightDeviceId/defaultInputId, so a single mock run would write
+  // `mock-input-1`..`mock-input-4` into the real settings.json and could leave
+  // the default input pointing at a device that will never exist again. The
+  // next production launch would then start on a dead input. Test mode must not
+  // be able to damage the wall's configuration.
+  if (state.testFlags.mock) return
+
   try {
     if (window.electronAPI) {
       const settingsToSave = {
@@ -390,10 +420,78 @@ function captureFrame() {
 }
 
 // =============================================================================
+// Test-mode launch flags (#248)
+// =============================================================================
+
+/**
+ * Read and apply the launch flags.
+ *
+ * Called first in init(), before anything reads state.testFlags. Failure is
+ * non-fatal and leaves the production defaults: a broken flag must not stop the
+ * wall from coming up.
+ */
+async function loadTestFlags() {
+  let args = []
+  try {
+    if (window.electronAPI?.getTestFlagArgs) {
+      args = await window.electronAPI.getTestFlagArgs()
+    }
+  } catch (e) {
+    console.error('[TestFlags] Could not read launch arguments:', e)
+    return
+  }
+
+  const { flags, errors } = parseTestFlags(args)
+  state.testFlags = flags
+
+  // Logged at error level on purpose. A mistyped flag means the operator is
+  // looking at a wall that is not in the mode they asked for, and a warning in
+  // a console nobody has open is how that goes unnoticed.
+  for (const message of errors) {
+    console.error(`[TestFlags] ${message}`)
+  }
+
+  if (anyTestFlagSet(flags)) {
+    console.log(`[TestFlags] TEST MODE -- ${describeTestFlags(flags)}`)
+  }
+
+  if (flags.screensaverDelayMs !== null) {
+    state.dvdScreensaverDelay = flags.screensaverDelayMs
+  }
+}
+
+// =============================================================================
 // Video Device Management
 // =============================================================================
 
 async function getVideoDevices() {
+  // Mock inputs (#248): skip hardware entirely. getUserMedia is not called at
+  // all, so this works with no capture device present and never triggers a
+  // camera permission prompt.
+  if (state.testFlags.mock) {
+    state.devices = mockDeviceList(state.testFlags.mockInputs)
+    console.log(`[TestFlags] ${state.devices.length} mock input(s):`,
+      state.devices.map(d => d.label).join(', '))
+
+    // Mock devices get in-memory settings entries so the dropdown, naming and
+    // enable/disable all work on them. saveSettings() is a no-op in mock mode,
+    // so none of this reaches disk.
+    for (const device of state.devices) {
+      if (!state.settings.inputs[device.deviceId]) {
+        state.settings.inputs[device.deviceId] = { name: null, enabled: true }
+      }
+    }
+
+    // Assign sides from the mock list rather than from saved settings: a saved
+    // real deviceId cannot match a mock one, and falling through to the normal
+    // restore path would leave both sides null and show nothing at all.
+    state.leftDeviceId = state.devices[0].deviceId
+    state.rightDeviceId = state.devices[1]?.deviceId ?? state.devices[0].deviceId
+
+    renderDropdownInputLists()
+    return state.devices
+  }
+
   try {
     // Request permission first, then immediately release the stream
     const permissionStream = await navigator.mediaDevices.getUserMedia({ video: true })
@@ -465,6 +563,12 @@ async function startVideoStream(deviceId, videoElement, side) {
     if (side === 'right' && state.rightStream) {
       state.rightStream.getTracks().forEach(track => track.stop())
     }
+    // A mock stream owns a requestAnimationFrame loop as well as its tracks
+    // (#248); stopping only the tracks would leave the loop drawing forever.
+    if (state.mockStreams[side]) {
+      state.mockStreams[side].stop()
+      state.mockStreams[side] = null
+    }
     
     if (!deviceId) {
       showNoSignal(side)
@@ -475,6 +579,40 @@ async function startVideoStream(deviceId, videoElement, side) {
     if (!isInputEnabled(deviceId)) {
       showNoSignal(side)
       return null
+    }
+
+    // Mock inputs (#248). Placed after the guards above so a disabled mock input
+    // behaves like a disabled real one, and before getUserMedia so no hardware
+    // is touched.
+    //
+    // Under --no-signal the mock draws its dead-input card rather than the live
+    // pattern. The overlay covers it either way, but the two differ the moment
+    // someone hides the overlay to look underneath, and a colourful test pattern
+    // behind a NO SIGNAL board would be actively misleading.
+    if (isMockDeviceId(deviceId)) {
+      const device = state.devices.find(d => d.deviceId === deviceId)
+      const mock = createMockStream({
+        label: getInputName(deviceId, device?.label || 'Mock Input'),
+        still: state.testFlags.noSignal,
+      })
+      state.mockStreams[side] = mock
+      videoElement.srcObject = mock.stream
+      if (side === 'left') {
+        state.leftStream = mock.stream
+      } else {
+        state.rightStream = mock.stream
+      }
+
+      // hideNoSignal is a no-op while --no-signal is set, so this is safe to
+      // call unconditionally: it clears the overlay in plain mock mode and
+      // leaves it up in forced mode.
+      hideNoSignal(side)
+
+      const label = side === 'left' ? elements.leftLabel : elements.rightLabel
+      if (label && device) {
+        label.textContent = getInputName(deviceId, device.label || 'Mock Input')
+      }
+      return mock.stream
     }
     
     // Pair audio by groupId, not by reusing the video deviceId (#151).
@@ -790,6 +928,13 @@ function showNoSignal(side) {
 }
 
 function hideNoSignal(side) {
+  // --no-signal (#248) pins the state on. This is the single seam that enforces
+  // it: every path that would clear the overlay -- a stream starting, detection
+  // reporting signal restored, an input switch -- goes through here, so one
+  // guard covers all of them. Guarding the call sites individually is how one
+  // gets missed and the forced state silently un-forces itself.
+  if (state.testFlags.noSignal) return
+
   const feed = side === 'left' ? elements.leftFeed : elements.rightFeed
   const overlay = feed.querySelector('.no-signal-overlay')
   overlay.classList.add('hidden')
@@ -797,6 +942,22 @@ function hideNoSignal(side) {
   // Release the GL context rather than leaving it running behind a hidden
   // overlay -- two idle WebGL contexts per wall is real GPU memory.
   stopNoSignalBoard(side, overlay)
+}
+
+/**
+ * Force both sides into the no-signal state for --no-signal (#248).
+ *
+ * Runs after the streams have been started, so it overrides whatever they did
+ * to the overlay rather than racing them.
+ */
+function applyForcedNoSignal() {
+  if (!state.testFlags.noSignal) return
+  showNoSignal('left')
+  showNoSignal('right')
+  console.log('[TestFlags] no-signal forced on both sides')
+  // Arms the screensaver timer, which is what makes --no-signal
+  // --screensaver-delay=0 land on a screensaver without any hardware involved.
+  updateDvdScreensaver()
 }
 
 /**
@@ -2348,6 +2509,16 @@ globalThis.__diag = async (cycles = 4) => {
 
 function startDetectionLoop() {
   if (state.detectionRunning) return
+
+  // --no-signal (#248) overrides detection's verdict, so running it would spend
+  // a per-cycle GPU readback on a result that is thrown away -- and every cycle
+  // would log a "signal restored" that hideNoSignal then refuses to act on.
+  // Left off rather than left running-and-ignored.
+  if (state.testFlags.noSignal) {
+    console.log('[Detection] Not started: --no-signal pins the state')
+    return
+  }
+
   state.detectionRunning = true
 
   let lastRun = 0
@@ -2547,6 +2718,10 @@ function getUniqueActiveDevices() {
 async function init() {
   console.log('Input Viewer initializing...')
 
+  // First, before anything reads state.testFlags: device enumeration, the
+  // screensaver delay and the no-signal state all branch on it.
+  await loadTestFlags()
+
   // Display app version from package.json
   if (window.electronAPI && window.electronAPI.getAppVersion) {
     try {
@@ -2638,6 +2813,9 @@ async function init() {
       await startVideoStream(state.rightDeviceId, elements.rightVideo, 'right')
     }
   }
+
+  // --no-signal (#248): override whatever the streams above did to the overlays.
+  applyForcedNoSignal()
 
   // Initialize screensaver registry (random screensaver chosen on activation)
   initScreensavers(elements.screensaverCanvas)
@@ -2734,5 +2912,12 @@ export {
   setBorderWidth,
   startDetectionLoop,
   stopDetectionLoop,
-  gpuFeedLayout
+  gpuFeedLayout,
+  // Exported so the no-signal transition itself is testable (#248). Before the
+  // flags existed, nothing in test/ drove showNoSignal/hideNoSignal at all --
+  // the coverage stopped at compareFrames, one layer below the state change.
+  showNoSignal,
+  hideNoSignal,
+  applyForcedNoSignal,
+  updateDvdScreensaver
 }
