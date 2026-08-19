@@ -132,6 +132,39 @@ body.single-view #video-wrapper {
   filter: contrast(1);
 }
 
+/* Input-switch fade. Held while the stream is being swapped.
+ *
+ * A dip to black rather than a crossfade: a true crossfade needs a second video
+ * element decoding the outgoing stream, and the point of keeping this cheap is not
+ * to double the decode. The dip also covers the stream-start flicker, which is the
+ * uglier half of a hard cut.
+ *
+ * TWO THINGS HERE ARE DELIBERATE, BECAUSE FREEZE ALSO OWNS THIS PROPERTY.
+ *
+ * toggleFreeze() sets video.style.opacity inline, '0' to hide the live feed behind
+ * the frozen frame and '1' to restore it. That collides twice:
+ *
+ *   - !important, because an inline style beats a class rule. Without it, one
+ *     freeze/unfreeze cycle leaves opacity:1 inline and this fade silently stops
+ *     working for the rest of the session.
+ *   - The transition is declared HERE rather than on the base video rule. On the
+ *     base it would animate freeze too, and freeze must be instant -- you would
+ *     watch the live feed dissolve into the frozen frame over 130ms. Declared on
+ *     the class, the fade-out animates and the fade-in snaps, because the
+ *     transition leaves with the class. A hard cut back is right anyway: once the
+ *     new stream is ready you want to see it, not wait for it.
+ */
+.video-feed video.swapping {
+  opacity: 0 !important;
+  transition: opacity 130ms ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .video-feed video.swapping {
+    transition: none;
+  }
+}
+
 /* Single view: video shows full content without cropping */
 body.single-view .video-feed.single video {
   object-fit: contain;

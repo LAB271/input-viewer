@@ -944,6 +944,17 @@ function hideDvdScreensaver() {
 // Layout Management
 // =============================================================================
 
+// Input-switch fade. Shorter than the layout transition on purpose: a layout change
+// is a deliberate reconfiguration and can take its time, whereas an input change
+// should feel immediate. 130ms out, then the stream swap, then the CSS fades it back
+// in over 180ms.
+const INPUT_FADE_MS = 130
+
+// Monotonic token per side, so an interrupted swap does not fade the wrong stream
+// back in. Pressing 2 then 3 quickly must leave input 3 visible, not whichever
+// acquisition happened to resolve last.
+const swapToken = { left: 0, right: 0 }
+
 // Layout transition (#247). Matches the CSS duration; the two must agree or the
 // sibling is hidden mid-slide or long after it has finished.
 const LAYOUT_ANIM_MS = 320
@@ -1198,6 +1209,19 @@ async function selectInputForSide(deviceId, side) {
   const device = state.devices.find(d => d.deviceId === deviceId)
   if (!device) return
 
+  const videoEl = side === 'left' ? elements.leftVideo : elements.rightVideo
+  const token = ++swapToken[side]
+  const fadeMs = layoutAnimMs() === 0 ? 0 : INPUT_FADE_MS
+
+  // Fade out, swap, fade in. The dark hold covers however long stream acquisition
+  // takes, which is the part that otherwise flickers.
+  if (fadeMs > 0 && videoEl) {
+    videoEl.classList.add('swapping')
+    await new Promise(resolve => setTimeout(resolve, fadeMs))
+    // A later switch on this side has taken over; let it own the fade-in.
+    if (swapToken[side] !== token) return
+  }
+
   if (side === 'left') {
     state.leftDeviceId = deviceId
     await startVideoStream(deviceId, elements.leftVideo, 'left')
@@ -1205,6 +1229,11 @@ async function selectInputForSide(deviceId, side) {
     state.rightDeviceId = deviceId
     await startVideoStream(deviceId, elements.rightVideo, 'right')
   }
+
+  // Only the newest swap for this side reveals the picture. Without the token, a
+  // slow acquisition finishing late would fade in a stream the operator has already
+  // switched away from.
+  if (videoEl && swapToken[side] === token) videoEl.classList.remove('swapping')
 
   const name = getInputName(deviceId, device.label || 'Input')
   showInputName(name)
