@@ -51,6 +51,14 @@ import { observeFrames } from './screensavers/gl-base.js'
 // the no-signal display, not one of the rotating screensavers (#92).
 import splitFlap from './screensavers/split-flap.js'
 
+// The shortcut list (#258): keys, labels and the key->shortcut lookup. Actions
+// live in SHORTCUT_ACTIONS below; this module deliberately holds no behaviour.
+import {
+  SHORTCUTS,
+  SHORTCUTS_BY_KEY,
+  inputKeyFor
+} from './shortcuts.js'
+
 // Test-mode launch flags (#248).
 import {
   parseTestFlags,
@@ -159,6 +167,7 @@ const elements = {
   updateNotification: document.getElementById('update-notification'),
   updateMessage: document.getElementById('update-message'),
   // New dropdown elements
+  shortcutsTable: document.getElementById('shortcuts-table'),
   viewModeDual: document.getElementById('view-mode-dual'),
   viewModeSingle: document.getElementById('view-mode-single'),
   dualColumns: document.getElementById('dual-columns'),
@@ -1262,6 +1271,86 @@ function updateDropdownVisibility() {
 /**
  * Render the simplified dropdown input lists (enabled inputs only)
  */
+// =============================================================================
+// Shortcut hints (#258)
+// =============================================================================
+
+/**
+ * A <kbd> chip, or a row of them with separators.
+ *
+ * Built as elements rather than an innerHTML string. The chips themselves come
+ * from a trusted constant, but the same helper is used next to device labels
+ * that come from capture hardware, and having one safe path is cheaper than
+ * remembering which call site is which.
+ */
+function shortcutChips(shortcut, className = 'shortcut-hint') {
+  const wrap = document.createElement('span')
+  wrap.className = className
+  const sep = shortcut.chipSep ?? ' / '
+  shortcut.chips.forEach((chip, i) => {
+    if (i > 0) wrap.appendChild(document.createTextNode(sep))
+    const kbd = document.createElement('kbd')
+    kbd.textContent = chip
+    wrap.appendChild(kbd)
+  })
+  return wrap
+}
+
+/** A single key as a chip, for the dropdown's per-row hints. */
+function shortcutKeyChip(key) {
+  const wrap = document.createElement('span')
+  wrap.className = 'shortcut-hint'
+  const kbd = document.createElement('kbd')
+  kbd.textContent = key.toUpperCase()
+  wrap.appendChild(kbd)
+  return wrap
+}
+
+/**
+ * Label the dropdown's view-mode buttons and render the Settings table.
+ *
+ * Both read from the same SHORTCUTS list as the keydown handler (#258), so the
+ * three cannot disagree. Called once at startup; nothing here changes with
+ * state, unlike the input rows which re-render on every device change.
+ */
+function renderShortcutHints() {
+  // Dual / Single buttons: the two dropdown controls that have a key.
+  const buttons = [
+    { el: elements.viewModeDual, id: 'layout-dual', text: 'Dual' },
+    { el: elements.viewModeSingle, id: 'layout-single', text: 'Single' },
+  ]
+  for (const { el, id, text } of buttons) {
+    if (!el) continue
+    const shortcut = SHORTCUTS.find(sc => sc.id === id)
+    el.textContent = text
+    if (shortcut) el.appendChild(shortcutChips(shortcut))
+  }
+
+  // Settings table: every shortcut, in list order.
+  const table = elements.shortcutsTable
+  if (!table) return
+  table.innerHTML = ''
+  for (const shortcut of SHORTCUTS) {
+    const row = document.createElement('tr')
+
+    const keyCell = document.createElement('td')
+    keyCell.appendChild(shortcutChips(shortcut, 'shortcut-keys'))
+    row.appendChild(keyCell)
+
+    const labelCell = document.createElement('td')
+    labelCell.textContent = shortcut.label
+    if (shortcut.note) {
+      const note = document.createElement('span')
+      note.className = 'shortcut-note'
+      note.textContent = ` (${shortcut.note})`
+      labelCell.appendChild(note)
+    }
+    row.appendChild(labelCell)
+
+    table.appendChild(row)
+  }
+}
+
 function renderDropdownInputLists() {
   // Clear lists
   elements.leftInputList.innerHTML = ''
@@ -1276,32 +1365,34 @@ function renderDropdownInputLists() {
     const isLeftActive = device.deviceId === state.leftDeviceId
     const isRightActive = device.deviceId === state.rightDeviceId
 
-    // Left column option
-    const leftOption = document.createElement('div')
-    leftOption.className = `input-option${isLeftActive ? ' selected' : ''}`
-    leftOption.textContent = customName
-    leftOption.addEventListener('click', () => {
-      selectInputForSide(device.deviceId, 'left')
-    })
-    elements.leftInputList.appendChild(leftOption)
+    // The number key that selects this input, or null past the fourth (#258).
+    // Null rather than an invented key: the wall can have more capture devices
+    // than there are number keys, and labelling a fifth row '5' would promise a
+    // binding that does not exist.
+    const key = inputKeyFor(index)
 
-    // Right column option
-    const rightOption = document.createElement('div')
-    rightOption.className = `input-option${isRightActive ? ' selected' : ''}`
-    rightOption.textContent = customName
-    rightOption.addEventListener('click', () => {
-      selectInputForSide(device.deviceId, 'right')
-    })
-    elements.rightInputList.appendChild(rightOption)
+    // Name via textContent, never innerHTML: this string is a device label from
+    // capture hardware or a user-entered rename.
+    const buildOption = (className, isActive, side) => {
+      const option = document.createElement('div')
+      option.className = `${className}${isActive ? ' selected' : ''}`
+      const name = document.createElement('span')
+      name.className = 'input-option-name'
+      name.textContent = customName
+      option.appendChild(name)
+      if (key) option.appendChild(shortcutKeyChip(key))
+      option.addEventListener('click', () => {
+        selectInputForSide(device.deviceId, side)
+      })
+      return option
+    }
 
-    // Single mode option
-    const singleOption = document.createElement('div')
-    singleOption.className = `single-input-option${isLeftActive ? ' selected' : ''}`
-    singleOption.textContent = customName
-    singleOption.addEventListener('click', () => {
-      selectInputForSide(device.deviceId, 'left')
-    })
-    elements.singleInputList.appendChild(singleOption)
+    elements.leftInputList.appendChild(
+      buildOption('input-option', isLeftActive, 'left'))
+    elements.rightInputList.appendChild(
+      buildOption('input-option', isRightActive, 'right'))
+    elements.singleInputList.appendChild(
+      buildOption('single-input-option', isLeftActive, 'left'))
   })
 }
 
@@ -1911,84 +2002,79 @@ async function sendRemoteKeypress(direction) {
 // Keyboard Shortcuts
 // =============================================================================
 
+/**
+ * What each shortcut id does.
+ *
+ * Keyed by the ids in shortcuts.js, which is where the keys themselves live
+ * (#258). Splitting it this way is what makes the invariant structural rather
+ * than a convention: handleKeyDown builds its lookup from SHORTCUTS, so a key
+ * that is not in the list is simply not handled, and an id in the list with no
+ * action here is caught by a test.
+ *
+ * Actions receive the event because a few need it -- select-input reads which
+ * number was pressed rather than needing four near-identical entries.
+ */
+const SHORTCUT_ACTIONS = {
+  'select-input': (event) => selectInput(parseInt(event.key, 10) - 1),
+
+  // Documented in the README since before the keyboard handler existed, but
+  // never wired up (#157): layout was switchable from the dropdown only, so a
+  // documented key silently did nothing. The booth is operated by keyboard,
+  // often by someone following a printed shortcut list, where that reads as the
+  // app being broken rather than the docs being wrong.
+  'layout-dual': () => setLayout('dual'),
+
+  // Single view shows the left feed. That is always the selected input: the
+  // number keys call selectInput() with the default side='both', so both feeds
+  // carry the same device and there is no "wrong side" to show.
+  'layout-single': () => setLayout('single'),
+
+  'freeze': () => toggleFreeze(),
+
+  // Toggle the screensaver on demand. Not 'S': that is documented in the README
+  // as single-view layout, and taking it would either break a documented binding
+  // or quietly make the docs wrong.
+  'screensaver-toggle': () => stepScreensaver(0),
+  'screensaver-next': () => stepScreensaver(1),
+  'screensaver-prev': () => stepScreensaver(-1),
+
+  'fullscreen': () => window.electronAPI.toggleFullscreen(),
+
+  'escape': () => {
+    closeAllPanels()
+    if (state.frozen) {
+      toggleFreeze() // Unfreeze on escape
+    }
+    window.electronAPI.isFullscreen().then(isFs => {
+      if (isFs) window.electronAPI.toggleFullscreen()
+    })
+  },
+
+  'quit': () => window.electronAPI.quitApp(),
+
+  'remote-back': () => sendRemoteKeypress('left'),
+  'remote-forward': () => sendRemoteKeypress('right'),
+}
+
 function handleKeyDown(event) {
   // Don't handle if typing in an input
   if (event.target.tagName === 'INPUT') return
 
   console.log(`[Key] pressed: "${event.key}" (code: ${event.code})`)
 
-  switch (event.key.toLowerCase()) {
-    case ' ': // Space bar - Freeze frame
-      event.preventDefault()
-      toggleFreeze()
-      break
-    case '1':
-    case '2':
-    case '3':
-    case '4':
-      selectInput(parseInt(event.key) - 1)
-      break
-    case 'f':
-    case 'f11':
-      event.preventDefault()
-      window.electronAPI.toggleFullscreen()
-      break
-    case 'escape':
-      closeAllPanels()
-      if (state.frozen) {
-        toggleFreeze() // Unfreeze on escape
-      }
-      window.electronAPI.isFullscreen().then(isFs => {
-        if (isFs) window.electronAPI.toggleFullscreen()
-      })
-      break
-    case 'q':
-      window.electronAPI.quitApp()
-      break
-    case 'd':
-      // Documented in the README since before the keyboard handler existed,
-      // but never wired up (#157): layout was switchable from the dropdown
-      // only, so a documented key silently did nothing. The booth is operated
-      // by keyboard, often by someone following a printed shortcut list, where
-      // that reads as the app being broken rather than the docs being wrong.
-      event.preventDefault()
-      setLayout('dual')
-      break
-    case 's':
-      // Single view shows the left feed. That is always the selected input:
-      // the number keys call selectInput() with the default side='both', so
-      // both feeds carry the same device and there is no "wrong side" to show.
-      event.preventDefault()
-      setLayout('single')
-      break
-    case 'v':
-      // Toggle the screensaver on demand. Not 'S': that is documented in the
-      // README as single-view layout, and taking it would either break a
-      // documented binding or quietly make the docs wrong.
-      event.preventDefault()
-      stepScreensaver(0)
-      break
-    case '+':
-    case '=':
-      // '=' is the unshifted key that produces '+' on US/UK layouts, so both
-      // land here -- otherwise stepping forward would need Shift held.
-      event.preventDefault()
-      stepScreensaver(1)
-      break
-    case '-':
-    case '_':
-      event.preventDefault()
-      stepScreensaver(-1)
-      break
-    case 'pageup':
-    case 'arrowleft':
-      sendRemoteKeypress('left')
-      break
-    case 'pagedown':
-    case 'arrowright':
-      sendRemoteKeypress('right')
-      break
+  const shortcut = SHORTCUTS_BY_KEY.get(event.key.toLowerCase())
+  if (!shortcut) return
+
+  const action = SHORTCUT_ACTIONS[shortcut.id]
+  if (!action) {
+    // Only reachable if an entry was added to shortcuts.js without an action
+    // here, which a test is meant to catch long before this could run.
+    console.error(`[Key] no action for shortcut "${shortcut.id}"`)
+    return
   }
+
+  if (shortcut.preventDefault) event.preventDefault()
+  action(event)
 }
 
 // =============================================================================
@@ -2872,6 +2958,11 @@ async function init() {
   renderDropdownInputLists()
   renderDropdownVolumeControls()
 
+  // Label the view-mode buttons and fill the Settings shortcut table from the
+  // shared list (#258). After renderDropdownInputLists, which paints the rows
+  // these sit alongside.
+  renderShortcutHints()
+
   // Show cursor initially
   showCursor()
 
@@ -2919,5 +3010,8 @@ export {
   showNoSignal,
   hideNoSignal,
   applyForcedNoSignal,
-  updateDvdScreensaver
+  updateDvdScreensaver,
+  // Exported so the rendered hints are testable against the shared list (#258).
+  renderShortcutHints,
+  renderDropdownInputLists
 }

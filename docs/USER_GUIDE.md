@@ -53,7 +53,7 @@ The app automatically selects the default mode based on your screen aspect ratio
 | `D` | Switch to Dual view |
 | `S` | Switch to Single view |
 | `Space` | Freeze/Unfreeze frame |
-| `F` | Toggle fullscreen |
+| `F` / `F11` | Toggle fullscreen |
 | `Esc` | Exit fullscreen / Unfreeze / Close menus |
 | `Q` | Quit application |
 | `V` | Show or hide the screensaver immediately, without waiting out the 5-minute no-signal delay |
