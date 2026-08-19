@@ -1014,13 +1014,153 @@ function updateDvdScreensaver() {
   }
 }
 
+// =============================================================================
+// Screensaver fades
+// =============================================================================
+
+// Must match the CSS. Out is quicker than in: a slow dip to black reads as the
+// wall dying, a slow rise reads as the next thing arriving.
+const SAVER_FADE_OUT_MS = 300
+const SAVER_FADE_IN_MS = 520
+
+// The single pending fade step. Every path that changes what the screensaver
+// canvas shows clears this first, which is what makes the fades interruptible.
+//
+// No token guard here, unlike the input switch (#247). That one needed one
+// because its async boundary was an awaited getUserMedia it could not cancel;
+// the only async step here is a setTimeout this module owns, so clearing it is
+// enough. Adding a token as well would be redundant state.
+let saverFadeTimer = null
+
+// True from the moment a dismissal starts until the overlay is actually hidden.
+//
+// updateDvdScreensaver() runs on the detection loop and calls hideDvdScreensaver()
+// whenever a saver is running and signal is back -- and during the fade-out the
+// saver IS still running, so it qualifies. Without this flag each call would
+// cancel the pending stop and start the fade again.
+//
+// **This is defensive, not load-bearing today.** A detection cycle is ~1.6s and
+// SAVER_FADE_OUT_MS is 300, so the fade always finishes before the next call can
+// arrive and the starvation cannot currently happen. It becomes real the moment
+// the fade is lengthened past the detection interval, which is one constant away
+// -- and the failure mode is bad enough (a screensaver stuck at opacity 0 over
+// live feeds, never stopping) that the guard is worth more than the line it costs.
+let saverDismissing = false
+
+/** 0 when the operator has asked the OS for less motion, so changes are instant. */
+function saverFadeMs (ms) {
+  return window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    ? 0
+    : ms
+}
+
+function clearSaverFade () {
+  if (saverFadeTimer) {
+    clearTimeout(saverFadeTimer)
+    saverFadeTimer = null
+  }
+}
+
+/**
+ * Bring the screensaver on screen, fading the overlay up over the board.
+ *
+ * @param {() => string} start starts a saver and returns its name
+ */
+function revealScreensaver (start) {
+  clearSaverFade()
+  saverDismissing = false
+  const overlay = elements.dvdOverlay
+  elements.screensaverCanvas.classList.remove('saver-swapping')
+
+  if (saverFadeMs(SAVER_FADE_IN_MS) === 0) {
+    overlay.classList.remove('fading', 'hidden')
+    return start()
+  }
+
+  // Order matters. `.fading` before `.hidden` is removed, so the overlay is
+  // never displayed at full opacity for a frame; the saver starts after, because
+  // it reads the canvas for layout size and display:none has none -- opacity 0
+  // does.
+  overlay.classList.add('fading')
+  overlay.classList.remove('hidden')
+  // Flush layout so the transition has a start value to animate FROM. Without
+  // this the class removal below coalesces into the same style recalculation and
+  // the overlay simply appears.
+  void overlay.offsetHeight
+
+  const name = start()
+  overlay.classList.remove('fading')
+  return name
+}
+
+/**
+ * Replace the running saver with another, dipping the canvas through black.
+ *
+ * The swap happens at full black, so neither saver is ever seen blended with the
+ * other -- two unrelated abstract animations crossfaded together read as mush
+ * rather than as a transition.
+ *
+ * @param {() => string} swap stops the current saver and starts the next
+ */
+function swapScreensaver (swap) {
+  clearSaverFade()
+  const canvas = elements.screensaverCanvas
+
+  if (saverFadeMs(SAVER_FADE_OUT_MS) === 0) {
+    canvas.classList.remove('saver-swapping')
+    swap()
+    return
+  }
+
+  canvas.classList.add('saver-swapping')
+  saverFadeTimer = setTimeout(() => {
+    saverFadeTimer = null
+    swap()
+    // Removing the class animates back up over SAVER_FADE_IN_MS, from the base
+    // rule rather than this one.
+    canvas.classList.remove('saver-swapping')
+  }, SAVER_FADE_OUT_MS)
+}
+
+/**
+ * Take the screensaver off screen, fading the overlay down to whatever is under
+ * it -- restored feeds, or the split-flap board if the signal is still gone.
+ *
+ * The saver keeps rendering through the fade and is stopped at the end, so this
+ * is a fade of live content rather than of a frozen last frame.
+ *
+ * @param {() => void} stop
+ */
+function dismissScreensaver (stop) {
+  const overlay = elements.dvdOverlay
+  const finish = () => {
+    stop()
+    overlay.classList.add('hidden')
+    overlay.classList.remove('fading')
+    elements.screensaverCanvas.classList.remove('saver-swapping')
+    saverDismissing = false
+  }
+
+  clearSaverFade()
+
+  if (saverFadeMs(SAVER_FADE_OUT_MS) === 0) {
+    finish()
+    return
+  }
+
+  saverDismissing = true
+  overlay.classList.add('fading')
+  saverFadeTimer = setTimeout(() => {
+    saverFadeTimer = null
+    finish()
+  }, SAVER_FADE_OUT_MS)
+}
+
 /**
  * Show the DVD screensaver overlay
  */
 function showDvdScreensaver() {
-  // Overlay must be visible before starting so the canvas has layout size.
-  elements.dvdOverlay.classList.remove('hidden')
-  const name = startScreensaver() // random pick each activation
+  const name = revealScreensaver(() => startScreensaver()) // random pick each activation
   console.log(`[Screensaver] Activated: ${name}`)
   startScreensaverRotation()
 }
@@ -1046,8 +1186,10 @@ function startScreensaverRotation() {
       stopScreensaverRotation()
       return
     }
-    const name = startScreensaver() // stops the current one, fresh seed
-    console.log(`[Screensaver] Rotated to: ${name}`)
+    swapScreensaver(() => {
+      const name = startScreensaver() // stops the current one, fresh seed
+      console.log(`[Screensaver] Rotated to: ${name}`)
+    })
   }, state.screensaverRotateDelay)
 }
 
@@ -1067,14 +1209,20 @@ function stepScreensaver(step) {
   if (!isScreensaverRunning()) {
     // Not running: show the overlay and start. A step of 0 gets a random pick,
     // which matches what a real no-signal activation would have done.
-    elements.dvdOverlay.classList.remove('hidden')
-    const name = step === 0 ? startScreensaver() : startScreensaver(0)
+    const name = revealScreensaver(
+      () => (step === 0 ? startScreensaver() : startScreensaver(0)))
     console.log(`[Screensaver] Manually started: ${name}`)
   } else if (step !== 0) {
     // Wrap in both directions so + at the end returns to the first.
+    //
+    // Read the index now rather than inside the swap: the dip is 300ms and
+    // holding + repeats faster than that, so a callback that read it at swap time
+    // would compound the steps already queued and skip entries.
     const next = ((getActiveIndex() + step) % count + count) % count
-    const name = startScreensaver(next)
-    console.log(`[Screensaver] Manual step to ${next + 1}/${count}: ${name}`)
+    swapScreensaver(() => {
+      const name = startScreensaver(next)
+      console.log(`[Screensaver] Manual step to ${next + 1}/${count}: ${name}`)
+    })
   } else {
     // Already running and no step: treat as "turn it off".
     hideDvdScreensaver()
@@ -1098,16 +1246,30 @@ function stopScreensaverRotation() {
  * Hide the DVD screensaver overlay
  */
 function hideDvdScreensaver() {
+  // Already fading out: let it finish rather than restarting the fade. See the
+  // note by saverDismissing for why this cannot bite at the current timings and
+  // why it is here anyway.
+  if (saverDismissing) return
+
   stopScreensaverRotation()
-  stopScreensaver()
-  elements.dvdOverlay.classList.add('hidden')
-  // Stop driving the room lighting (#59). By default this sends nothing at all:
-  // the fixtures keep their last colour, so a room with people in it does not
-  // suddenly go dark and whatever normally owns the lights takes over on its
-  // next command. A scene is posted only if artnetReleaseScene is configured.
-  const artnet = getArtnetSync()
-  if (artnet) artnet.release()
-  console.log('[Screensaver] Deactivated')
+
+  dismissScreensaver(() => {
+    stopScreensaver()
+
+    // Stop driving the room lighting (#59). By default this sends nothing at all:
+    // the fixtures keep their last colour, so a room with people in it does not
+    // suddenly go dark and whatever normally owns the lights takes over on its
+    // next command. A scene is posted only if artnetReleaseScene is configured.
+    //
+    // Inside the callback, not before it. The saver keeps rendering through the
+    // fade and gl-base keeps handing its frames to the Art-Net observer, so a
+    // release posted at the start of the fade can be overwritten by a frame that
+    // arrives during it -- offerFrame is rate-limited to 1Hz, which is inside the
+    // fade window. Release once nothing is producing frames any more.
+    const artnet = getArtnetSync()
+    if (artnet) artnet.release()
+    console.log('[Screensaver] Deactivated')
+  })
 }
 
 // =============================================================================
@@ -3013,5 +3175,14 @@ export {
   updateDvdScreensaver,
   // Exported so the rendered hints are testable against the shared list (#258).
   renderShortcutHints,
-  renderDropdownInputLists
+  renderDropdownInputLists,
+  // Screensaver fades. Each takes the swap as a callback, so the choreography is
+  // testable with a spy in place of a real saver -- starting one needs WebGL2,
+  // which jsdom has none of.
+  revealScreensaver,
+  swapScreensaver,
+  dismissScreensaver,
+  hideDvdScreensaver,
+  SAVER_FADE_OUT_MS,
+  SAVER_FADE_IN_MS
 }
