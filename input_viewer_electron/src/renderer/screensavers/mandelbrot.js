@@ -236,6 +236,44 @@ const TARGET_FRAME_MS = 20
 const MIN_ITER_BASE = 220
 const MIN_ITER_PER_DOUBLING = 40
 
+// WHAT THIS COSTS ON THE WALL, AND WHY IT IS THE FLOOR'S PRICE (#225)
+//
+// #225 measured every saver at 6000x1200 and put this one below 30 fps. That is
+// the floor above doing what it is for, not a defect, and the numbers are worth
+// stating so nobody "optimises" it by starving the loop.
+//
+// The budget is deterministic from the constants above:
+//
+//   log2Depth      floor    wanted
+//           0        220       300
+//          20       1020      1340
+//          40       1820      2380
+//          60       2620      3420
+//          80       3420      4460
+//
+// Measured at 6000x1200 on a real GPU (ANGLE/Metal, M3 Pro, seed 4242):
+//
+//   15s run, shallow    26.6 fps    37.6 ms/frame
+//   60s run, deeper     13.0 fps    76.9 ms/frame
+//
+// So there is no single frame rate for this saver: cost climbs with dive depth
+// because the budget does, and it roughly halves over the first minute. Any figure
+// quoted for it has to say how far into the dive it was taken -- #225's 26.6 was at
+// 15s, early.
+//
+// The closed loop is not achieving TARGET_FRAME_MS at this resolution and cannot.
+// It reduces maxIter whenever the EMA exceeds TARGET_FRAME_MS * 1.15 = 23 ms, and
+// at 37-77 ms that is every frame, so maxIter is driven down until it clamps here
+// at the floor and stays. TARGET_FRAME_MS is therefore aspirational on the wall
+// rather than met: it governs behaviour on smaller canvases, where there is slack.
+//
+// Which makes the trade-off explicit. Going faster at 6000x1200 means lowering
+// MIN_ITER_BASE or MIN_ITER_PER_DOUBLING, and the comment above says what that
+// buys: not less fine detail but false interior, because every pixel that has not
+// escaped by the cap is drawn with the interior colouring. A cheaper deep frame is
+// a wrong one. That is a quality decision, not a performance fix, and it belongs
+// to whoever owns how the dive should look.
+
 // Dive pacing. A doubling every ~3.5s is contemplative rather than dizzying,
 // and takes the full 80 doublings in about 4.5 minutes -- so a 10-minute
 // no-signal rotation slot shows two complete, different dives.
