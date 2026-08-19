@@ -944,6 +944,23 @@ function hideDvdScreensaver() {
 // Layout Management
 // =============================================================================
 
+// Layout transition (#247). Matches the CSS duration; the two must agree or the
+// sibling is hidden mid-slide or long after it has finished.
+const LAYOUT_ANIM_MS = 320
+
+// Pending "now actually display:none the collapsed feed" timer. Held at module
+// scope so a second layout switch arriving mid-animation can cancel it -- which is
+// what makes the transition interruptible rather than leaving a feed hidden after
+// the user has already switched back.
+let layoutAnimTimer = null
+
+/** 0 when the operator has asked the OS for less motion, so the switch is instant. */
+function layoutAnimMs () {
+  return window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    ? 0
+    : LAYOUT_ANIM_MS
+}
+
 function setLayout(mode) {
   state.layoutMode = mode
   state.settings.layoutMode = mode
@@ -958,20 +975,41 @@ function setLayout(mode) {
   // Update volume controls to show correct inputs
   renderDropdownVolumeControls()
 
+  // Cancel any pending hide from a previous switch. Without this, switching
+  // single -> dual -> single inside the animation window leaves the earlier timer
+  // to fire and hide a feed that should now be visible.
+  if (layoutAnimTimer !== null) {
+    clearTimeout(layoutAnimTimer)
+    layoutAnimTimer = null
+  }
+  const animMs = layoutAnimMs()
+
   switch (mode) {
     case 'dual':
       document.body.classList.remove('single-view')
-      elements.leftFeed.classList.remove('hidden', 'single')
+      elements.leftFeed.classList.remove('hidden', 'single', 'collapsed')
+      // Display it BEFORE clearing .collapsed, then force a reflow: a transition
+      // cannot interpolate from display:none, so without the reflow the browser
+      // coalesces both changes and the feed appears at full width instantly.
       elements.rightFeed.classList.remove('hidden', 'single')
+      void elements.rightFeed.offsetWidth
+      elements.rightFeed.classList.remove('collapsed')
       elements.centerDivider.classList.remove('hidden', 'overlay')
       elements.bottomLogo.classList.add('hidden')
       break
     case 'single':
       document.body.classList.add('single-view')
-      elements.leftFeed.classList.remove('hidden')
+      elements.leftFeed.classList.remove('hidden', 'collapsed')
       elements.leftFeed.classList.add('single')
-      elements.rightFeed.classList.add('hidden')
-      // Hide center divider and bottom logo in single view - video fills screen
+      // Collapse first and hide only once it has finished, so the right feed
+      // shrinks out instead of vanishing.
+      elements.rightFeed.classList.add('collapsed')
+      layoutAnimTimer = setTimeout(() => {
+        layoutAnimTimer = null
+        // Only hide if single view is still the current mode -- the switch may
+        // have been reversed while this was pending.
+        if (state.layoutMode === 'single') elements.rightFeed.classList.add('hidden')
+      }, animMs)
       elements.centerDivider.classList.add('overlay')
       elements.bottomLogo.classList.add('hidden')
       break

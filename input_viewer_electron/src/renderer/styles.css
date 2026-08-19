@@ -83,9 +83,34 @@ body.cursor-visible {
   background-color: #111;
 }
 
+/* Single view is expressed by COLLAPSING the sibling, not by widening this one.
+   flex: none + width: 100% is not animatable against a display:none sibling --
+   there is nothing to interpolate. Growing from a half share while the other
+   shrinks to nothing is, and it produces the same final layout (#247). */
 .video-feed.single {
-  flex: none;
-  width: 100%;
+  flex: 1 1 0;
+}
+
+/* Layout transition (#247).
+   flex-grow and opacity on the two feed CONTAINERS. The compositor already
+   re-scales the video every frame, so this adds a layout recalculation per frame
+   and no new compositing work -- #62's bench measured compositing as not the
+   bottleneck at 6000x1200, which is what makes this affordable at wall size.
+   Deliberately not transform: scaleX, which would distort the picture. */
+.video-feed {
+  transition: flex-grow 320ms ease, opacity 320ms ease;
+}
+
+.video-feed.collapsed {
+  flex-grow: 0;
+  opacity: 0;
+}
+
+/* An operator who has asked the OS for less motion gets the old instant cut. */
+@media (prefers-reduced-motion: reduce) {
+  .video-feed {
+    transition: none;
+  }
 }
 
 /* Single view uses full height - no bottom logo */
