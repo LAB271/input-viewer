@@ -636,6 +636,165 @@ body:has(#dropdown-panel:hover) * {
   padding: 20px;
 }
 
+/* =============================================================================
+   Shortcut legend (dropup)
+   ============================================================================= */
+
+/* The mirror of the dropdown above: same hover-to-reveal, same slide, same
+   touch-open class, anchored to the bottom edge instead of the top. Rows come from
+   shortcuts.js, so the legend cannot disagree with what the keys do (#258).
+   
+   Wider than the dropdown on purpose. The dropdown is a picker capped at 400px;
+   this is a reference table, and the wall is 5:1 -- a grid that uses the width
+   turns twelve rows into two or three short columns instead of one long list that
+   runs off the bottom of a window. */
+#legend-trigger {
+  position: fixed;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 60px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: rgba(0, 0, 0, 0.5);
+  /* Mirrored corners: rounded on the side away from the edge it hangs off. */
+  border-radius: 12px 12px 0 0;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+  z-index: 100;
+  -webkit-app-region: no-drag;
+}
+
+body.cursor-visible #legend-trigger {
+  opacity: 0.7;
+}
+
+.legend-arrow {
+  font-size: 14px;
+  color: var(--text-color);
+  transition: transform 0.3s ease;
+}
+
+#legend-panel {
+  position: fixed;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%) translateY(100%);
+  background-color: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-bottom: none;
+  border-radius: 12px 12px 0 0;
+  z-index: 99;
+  /* An explicit width, not just a max.
+     
+     A fixed-position element is shrink-to-fit, so `max-width` caps it but never
+     expands it -- and `grid-template-columns: repeat(auto-fit, ...)` needs a
+     DEFINITE width to work out how many columns fit. With only a max the panel
+     sized to its content's minimum: measured 467px wide and one column at a
+     1500px viewport, which is the long-list-running-off-the-bottom this grid
+     exists to avoid. */
+  width: min(1100px, 92vw);
+  max-height: 60vh;
+  overflow-y: auto;
+  transition: transform 0.3s ease;
+  -webkit-app-region: no-drag;
+}
+
+#legend-trigger:hover + #legend-panel,
+#legend-panel:hover {
+  transform: translateX(-50%) translateY(0);
+}
+
+#legend-trigger:hover .legend-arrow {
+  transform: rotate(180deg);
+}
+
+/* State-based, for touch and programmatic control. Mirrors the dropdown. */
+#legend-trigger.touch-open + #legend-panel,
+#legend-panel.touch-open {
+  transform: translateX(-50%) translateY(0);
+}
+
+#legend-trigger.touch-open .legend-arrow {
+  transform: rotate(180deg);
+}
+
+/* Keep the cursor up while the legend is open, same as the dropdown does. */
+body:has(#legend-trigger:hover),
+body:has(#legend-panel:hover) {
+  cursor: default !important;
+}
+
+body:has(#legend-trigger:hover) *,
+body:has(#legend-panel:hover) * {
+  cursor: default;
+}
+
+@media (pointer: coarse) {
+  #legend-trigger {
+    width: 80px;
+    height: 44px;
+  }
+}
+
+.legend-content {
+  padding: 20px 24px;
+}
+
+.legend-title {
+  font-size: 11px;
+  font-weight: 600;
+  margin-bottom: 14px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* auto-fit rather than a fixed column count: one rule covers the 6000px wall and
+   a small dev window, wrapping to however many columns the width allows. */
+.legend-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px 24px;
+}
+
+.legend-row {
+  display: flex;
+  /* Top-aligned, not centred: a label that wraps to two lines should keep its key
+     chip beside the FIRST line rather than floating against the middle. */
+  align-items: flex-start;
+  gap: 10px;
+  /* min-width:0 so a long label wraps inside its cell rather than widening the
+     track -- the same grid trap that overflowed the dropdown columns. */
+  min-width: 0;
+}
+
+/* Fixed width so the labels line up in a column instead of ragging against
+   whatever the key chips happen to measure. */
+.legend-keys {
+  flex-shrink: 0;
+  width: 84px;
+}
+
+/* Wraps rather than truncates. Measured at 1100px wide: three of the twelve
+   labels ellipsised, including both "Presentation: ... (if the remote keyboard is
+   enabled)" rows -- so the caveat, which is the only reason those rows are
+   confusing without it, was the part being cut. A legend that hides what a key
+   does defeats itself; uneven row heights are the cheaper cost. */
+.legend-label {
+  font-size: 12px;
+  color: var(--text-color);
+  min-width: 0;
+  line-height: 1.5;
+}
+
+.legend-note {
+  color: var(--text-muted);
+}
+
 .dropdown-divider {
   height: 1px;
   background: var(--panel-border);

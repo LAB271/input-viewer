@@ -136,7 +136,24 @@ Four consumers read from it, and none of them keeps its own copy:
 | the keydown handler | `SHORTCUTS_BY_KEY.get(event.key.toLowerCase())`, then `SHORTCUT_ACTIONS[id]` |
 | the dropdown | `renderShortcutHints()` labels Dual/Single; the **single-view** input rows get `inputKeyFor(index)` |
 | the Settings table | `renderShortcutHints()` fills `#shortcuts-table`, which ships empty |
+| the legend (dropup) | `renderShortcutLegend()` fills `#legend-grid`, which also ships empty |
 | `README.md` and `docs/USER_GUIDE.md` | still hand-written, but a test asserts every chip appears in both |
+
+The legend is the mirror of the dropdown, on the bottom edge: same hover-to-reveal, same
+slide, same `touch-open` class. It shows the **same rows** as the Settings table rather than a
+shortened "important ones" set -- that would be a fourth hand-maintained list, which is what
+this whole arrangement exists to remove. A test asserts the two carry identical chips.
+
+Two things about it that measuring caught, both worth not repeating:
+
+- **`#legend-panel` needs an explicit `width`, not only a `max-width`.** A fixed-position
+  element is shrink-to-fit, so a max caps it but never expands it -- and
+  `grid-template-columns: repeat(auto-fit, ...)` needs a *definite* width to work out its
+  column count. With only a max it measured 467px wide and one column at a 1500px viewport,
+  which is exactly the long list running off the bottom that the grid exists to avoid.
+- **Legend labels wrap; they do not truncate.** At 1100px, three of twelve ellipsised,
+  including both "(if the remote keyboard is enabled)" caveats -- the part that makes those
+  rows mean anything. Uneven row heights are the cheaper cost.
 
 Adding a key means adding one entry and one action. The entry alone gets you a
 row in the table and a hint in the dropdown with a key that does nothing, and a

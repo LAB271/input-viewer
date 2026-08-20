@@ -125,6 +125,8 @@ const state = {
   lastMoveDirection: null,    // 'left' or 'right'
   // Dropdown state for touch support
   dropdownOpen: false,
+  // Shortcut legend (dropup) state for touch support
+  legendOpen: false,
   // Audio state
   audioContext: null,
   leftAudioGain: null,        // GainNode for left feed
@@ -171,6 +173,9 @@ const elements = {
   updateMessage: document.getElementById('update-message'),
   // New dropdown elements
   shortcutsTable: document.getElementById('shortcuts-table'),
+  legendTrigger: document.getElementById('legend-trigger'),
+  legendPanel: document.getElementById('legend-panel'),
+  legendGrid: document.getElementById('legend-grid'),
   viewModeDual: document.getElementById('view-mode-dual'),
   viewModeSingle: document.getElementById('view-mode-single'),
   dualColumns: document.getElementById('dual-columns'),
@@ -1549,6 +1554,58 @@ function shortcutKeyChip(key) {
 }
 
 /**
+ * Fill the shortcut legend (the dropup at the bottom edge).
+ *
+ * Third consumer of SHORTCUTS, after the keydown handler and the Settings table
+ * (#258). Rendered once at startup: the list is a constant, so nothing here
+ * changes with state.
+ *
+ * Deliberately the same rows as the Settings table rather than a shortened set. A
+ * legend that showed only "the important ones" would be a fourth hand-maintained
+ * list, which is the thing #258 existed to remove.
+ */
+function renderShortcutLegend () {
+  const grid = elements.legendGrid
+  if (!grid) return
+  grid.innerHTML = ''
+
+  for (const shortcut of SHORTCUTS) {
+    const row = document.createElement('div')
+    row.className = 'legend-row'
+    row.appendChild(shortcutChips(shortcut, 'legend-keys'))
+
+    const label = document.createElement('span')
+    label.className = 'legend-label'
+    label.textContent = shortcut.label
+    if (shortcut.note) {
+      const note = document.createElement('span')
+      note.className = 'legend-note'
+      note.textContent = ` (${shortcut.note})`
+      label.appendChild(note)
+    }
+    row.appendChild(label)
+    grid.appendChild(row)
+  }
+}
+
+/** Toggle the legend, for touch. Mirrors toggleDropdown(). */
+function toggleLegend () {
+  state.legendOpen = !state.legendOpen
+  updateLegendState()
+}
+
+/** Close the legend. */
+function closeLegend () {
+  state.legendOpen = false
+  updateLegendState()
+}
+
+function updateLegendState () {
+  elements.legendPanel.classList.toggle('touch-open', state.legendOpen)
+  elements.legendTrigger.classList.toggle('touch-open', state.legendOpen)
+}
+
+/**
  * Label the dropdown's view-mode buttons and render the Settings table.
  *
  * Both read from the same SHORTCUTS list as the keydown handler (#258), so the
@@ -2318,6 +2375,7 @@ const SHORTCUT_ACTIONS = {
 
   'escape': () => {
     closeAllPanels()
+    closeLegend()
     if (state.frozen) {
       toggleFreeze() // Unfreeze on escape
     }
@@ -2450,6 +2508,36 @@ function setupEventListeners() {
     elements.dropdownSystemVolumeValue.textContent = `${volume}%`
     await setSystemVolume(volume)
   })
+
+  // Shortcut legend (dropup). Same three behaviours the dropdown has: keep the
+  // cursor up while it is open, toggle on touch, close on a tap outside.
+  elements.legendTrigger.addEventListener('mouseenter', () => {
+    document.body.classList.add('cursor-visible')
+    clearTimeout(state.cursorTimeout)
+  })
+
+  elements.legendPanel.addEventListener('mouseenter', () => {
+    document.body.classList.add('cursor-visible')
+    clearTimeout(state.cursorTimeout)
+  })
+
+  elements.legendPanel.addEventListener('mouseleave', () => {
+    showCursor()
+  })
+
+  elements.legendTrigger.addEventListener('touchstart', (e) => {
+    e.preventDefault()
+    toggleLegend()
+    showCursor()
+  }, { passive: false })
+
+  document.addEventListener('touchstart', (e) => {
+    if (state.legendOpen) {
+      const inside = elements.legendPanel.contains(e.target) ||
+                     elements.legendTrigger.contains(e.target)
+      if (!inside) closeLegend()
+    }
+  }, { passive: true })
 
   // Touch support for dropdown
   elements.dropdownTrigger.addEventListener('touchstart', (e) => {
@@ -3242,6 +3330,7 @@ async function init() {
   // shared list (#258). After renderDropdownInputLists, which paints the rows
   // these sit alongside.
   renderShortcutHints()
+  renderShortcutLegend()
 
   // Show cursor initially
   showCursor()
@@ -3293,6 +3382,9 @@ export {
   updateDvdScreensaver,
   // Exported so the rendered hints are testable against the shared list (#258).
   renderShortcutHints,
+  renderShortcutLegend,
+  toggleLegend,
+  closeLegend,
   renderDropdownInputLists,
   // Screensaver fades. Each takes the swap as a callback, so the choreography is
   // testable with a spy in place of a real saver -- starting one needs WebGL2,

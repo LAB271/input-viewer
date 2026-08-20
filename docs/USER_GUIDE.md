@@ -47,6 +47,11 @@ The app automatically selects the default mode based on your screen aspect ratio
 
 ## Keyboard Shortcuts
 
+Hover the **bottom** edge of the screen to bring up a legend of every shortcut, the same way
+hovering the top edge brings up the input dropdown. The legend is generated from the app's own
+bindings, so it always matches what the keys actually do.
+
+
 | Key | Action |
 |-----|--------|
 | `1` - `4` | Select input 1-4 |

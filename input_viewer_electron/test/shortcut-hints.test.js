@@ -40,6 +40,7 @@ const { SHORTCUTS, shortcutById } =
 const {
   state, elements, getDefaultSettings, handleKeyDown, setLayout,
   renderShortcutHints, renderDropdownInputLists,
+  renderShortcutLegend, toggleLegend, closeLegend,
 } = await import('../src/renderer/renderer.js')
 
 function reset(devices = []) {
@@ -356,5 +357,136 @@ describe('the keys still do what they did', () => {
     for (const shortcut of SHORTCUTS) {
       expect(shortcutById(shortcut.id)).toBeDefined()
     }
+  })
+})
+
+describe('the shortcut legend (dropup)', () => {
+  // Third consumer of SHORTCUTS, after the keydown handler and the Settings
+  // table. Deliberately the same rows as the table rather than a shortened
+  // "important ones" set -- that would be a fourth hand-maintained list, which is
+  // what #258 existed to remove.
+
+  it('renders one row per shortcut, in list order', () => {
+    renderShortcutLegend()
+    const rows = [...elements.legendGrid.children]
+    expect(rows).toHaveLength(SHORTCUTS.length)
+    expect(rows.map(r => r.querySelector('.legend-label').textContent.split(' (')[0]))
+      .toEqual(SHORTCUTS.map(s => s.label))
+  })
+
+  it('prints each shortcut\'s keys as chips', () => {
+    renderShortcutLegend()
+    const rows = [...elements.legendGrid.children]
+    rows.forEach((row, i) => {
+      expect([...row.querySelectorAll('kbd')].map(k => k.textContent), SHORTCUTS[i].id)
+        .toEqual(SHORTCUTS[i].chips)
+    })
+  })
+
+  it('carries the caveat on the remote-keyboard rows', () => {
+    renderShortcutLegend()
+    const notes = [...elements.legendGrid.querySelectorAll('.legend-note')]
+    expect(notes).toHaveLength(SHORTCUTS.filter(s => s.note).length)
+    expect(notes[0].textContent).toContain('remote keyboard')
+  })
+
+  it('replaces its rows rather than appending on a re-render', () => {
+    renderShortcutLegend()
+    renderShortcutLegend()
+    expect(elements.legendGrid.children).toHaveLength(SHORTCUTS.length)
+  })
+
+  it('shows every key the Settings table shows', () => {
+    // The two are the same list; if they ever diverge, one of them is a second
+    // source of truth again.
+    renderShortcutHints()
+    renderShortcutLegend()
+    const chips = (root) => [...root.querySelectorAll('kbd')].map(k => k.textContent).sort()
+    expect(chips(elements.legendGrid)).toEqual(chips(elements.shortcutsTable))
+  })
+})
+
+describe('opening and closing the legend', () => {
+  beforeEach(() => {
+    closeLegend()
+  })
+
+  it('toggles touch-open on both the trigger and the panel', () => {
+    // The CSS opens the panel from either, mirroring the dropdown:
+    // `#legend-trigger.touch-open + #legend-panel, #legend-panel.touch-open`.
+    toggleLegend()
+    expect(elements.legendPanel.classList.contains('touch-open')).toBe(true)
+    expect(elements.legendTrigger.classList.contains('touch-open')).toBe(true)
+
+    toggleLegend()
+    expect(elements.legendPanel.classList.contains('touch-open')).toBe(false)
+    expect(elements.legendTrigger.classList.contains('touch-open')).toBe(false)
+  })
+
+  it('tracks state.legendOpen', () => {
+    toggleLegend()
+    expect(state.legendOpen).toBe(true)
+    closeLegend()
+    expect(state.legendOpen).toBe(false)
+  })
+
+  it('closes on Escape, like the other panels', () => {
+    globalThis.window.electronAPI = {
+      isFullscreen: async () => false,
+      toggleFullscreen: vi.fn(),
+    }
+    toggleLegend()
+    handleKeyDown({ key: 'Escape', target: document.body, preventDefault() {} })
+    expect(state.legendOpen).toBe(false)
+    delete globalThis.window.electronAPI
+  })
+})
+
+describe('the legend geometry mirrors the dropdown', () => {
+  const CSS = readFileSync(
+    path.resolve(projectRoot, 'src/renderer/styles.css'), 'utf8')
+
+  const ruleBody = (selector) => {
+    const re = new RegExp(
+      `${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\{([^}]*)\\}`, 'g')
+    const bodies = [...CSS.matchAll(re)].map(m => m[1])
+    expect(bodies.length, `rule not found: ${selector}`).toBeGreaterThan(0)
+    return bodies.join('\n')
+  }
+
+  it('anchors to the bottom edge and hides itself a full height below', () => {
+    const body = ruleBody('#legend-panel')
+    expect(body).toMatch(/bottom:\s*0/)
+    // 100% of its own height, so it is off-screen whatever the row count.
+    expect(body).toMatch(/transform:\s*translateX\(-50%\)\s*translateY\(100%\)/)
+  })
+
+  it('sets an explicit width, not only a max', () => {
+    // A fixed-position element is shrink-to-fit, so `max-width` caps it but never
+    // expands it -- and auto-fit needs a DEFINITE width to work out its column
+    // count. With only a max it measured 467px and one column at a 1500px
+    // viewport, which is the long list this grid exists to avoid.
+    const body = ruleBody('#legend-panel')
+    expect(body).toMatch(/(^|\s)width:\s*min\(/m)
+  })
+
+  it('wraps its columns to the available width', () => {
+    expect(ruleBody('.legend-grid'))
+      .toMatch(/grid-template-columns:\s*repeat\(auto-fit,\s*minmax\(/)
+  })
+
+  it('lets labels wrap rather than truncate', () => {
+    // Measured at 1100px: three of twelve labels ellipsised, including both
+    // "(if the remote keyboard is enabled)" caveats -- the part that makes those
+    // rows make sense. A legend that hides what a key does defeats itself.
+    const body = ruleBody('.legend-label')
+    expect(body).not.toMatch(/text-overflow:\s*ellipsis/)
+    expect(body).not.toMatch(/white-space:\s*nowrap/)
+  })
+
+  it('gives the key column a fixed width so labels line up', () => {
+    const body = ruleBody('.legend-keys')
+    expect(body).toMatch(/width:\s*\d+px/)
+    expect(body).toMatch(/flex-shrink:\s*0/)
   })
 })
