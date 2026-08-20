@@ -137,6 +137,20 @@
     </div>
   </div>
 
+  <!-- Shortcut legend, a dropup at the bottom edge (mirrors the dropdown above).
+       The rows are rendered from shortcuts.js, so this cannot drift from what the
+       keys actually do -- which is the whole point of that list (#258). -->
+  <div id="legend-trigger">
+    <span class="legend-arrow">&#9650;</span>
+  </div>
+
+  <div id="legend-panel">
+    <div class="legend-content">
+      <div class="legend-title">Keyboard Shortcuts</div>
+      <div id="legend-grid" class="legend-grid"></div>
+    </div>
+  </div>
+
   <!-- Update Notification -->
   <div id="update-notification" class="hidden">
     <span id="update-message"></span>
