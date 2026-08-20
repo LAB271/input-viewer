@@ -1235,6 +1235,72 @@ kbd {
 
 /* The name takes the room the chip does not, so a long device label truncates
    instead of pushing the chip out of the row. */
+/* =============================================================================
+   Input thumbnails (#242)
+   ============================================================================= */
+
+/* A fixed tile size, and a different arrangement per list, because the two lists
+   are very different widths.
+   
+   The first attempt made the tile the full row width. Measured at a 1280x800
+   window that gave 292x164 tiles and 218px rows in the single list -- 1166px of
+   content in a 640px panel, so a four-input picker scrolled. Absurd for something
+   you hover over to choose an input.
+   
+   A fixed 128x72 is enough to recognise what an input is showing, and it changes
+   what fits: in the single list (~322px rows) the name sits BESIDE the tile; in a
+   dual column (~149px rows) it goes below. Two rules, each matching its width,
+   rather than one rule that is wrong in one of them. */
+:root {
+  --input-thumb-w: 128px;
+  --input-thumb-h: 72px;
+}
+
+/* Dual columns: tile above, name below. No room for anything else at ~149px. */
+.input-option {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+/* Single list: tile left, name and chip filling the rest. */
+.single-input-option {
+  flex-direction: row;
+  align-items: center;
+}
+
+.input-thumb {
+  width: var(--input-thumb-w);
+  height: var(--input-thumb-h);
+  border-radius: 4px;
+  background-color: rgba(0, 0, 0, 0.5);
+  border: 1px solid var(--panel-border);
+  /* cover, matching the crop snapshotFromVideo() already applies, so a 4:3
+     capture is cropped rather than squashed in both places. */
+  background-size: cover;
+  background-position: center;
+  /* Never absorb the row's slack: the name is what should flex. */
+  flex-shrink: 0;
+}
+
+/* The tile is rendered before any still exists and is its own placeholder, so a
+   row does not change height when a snapshot lands. This only marks the arrival,
+   for anything that wants to style it differently. */
+.input-thumb.has-thumb {
+  border-color: transparent;
+}
+
+/* Name and chip on one line. This is the flex row that
+   `.shortcut-hint { margin-left: auto }` pushes the chip to the end of. */
+.input-option-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  /* min-width:0 so a long name ellipsises inside this box rather than widening
+     it and pushing the chip out -- the same reason it is on the name itself. */
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
 /* Truncation applies only where a chip shares the row -- the single-view list.
    The dual columns carry no chip (see buildOption in renderer.js: the number keys
    set both feeds, so a per-side row must not advertise one), so their names wrap

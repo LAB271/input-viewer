@@ -85,6 +85,44 @@ npm run dev -- -- --no-signal --screensaver-delay=0  # straight to a screensaver
 open -a 'Input Viewer' --args --no-signal --screensaver-delay=0
 ```
 
+### Dropdown input thumbnails are snapshots, not previews (#242)
+
+`src/renderer/input-thumbnails.js` snapshots each input when the dropdown opens and
+iterates them. **At most one extra stream is open at any moment**, which is why this needed
+no change to how feeds are held — and why #261, the N-feed refactor, could be closed
+unbuilt.
+
+Where each still comes from is the point:
+
+| Input | Source |
+|---|---|
+| already on screen | straight off the live `<video>`. No stream, no negotiation |
+| not on screen | a temporary `getUserMedia`, released the moment a frame is drawn |
+
+A cold capture device takes a visible fraction of a second to negotiate, so the sweep is
+sequential and rows fill in as stills land. A device that never presents a frame times out
+at `FRAME_TIMEOUT_MS` and stays a placeholder — which is also what an exclusive-access
+device does. **A failed capture is a normal outcome here, not an error.**
+
+Four things worth not re-learning:
+
+- **Mock inputs need their own branch.** `getUserMedia` would reject for a `mock-input-N`
+  id, so `openTemporaryStream` calls `createMockStream` instead. Without it the feature
+  would be untestable in exactly the mode built for testing it (#248).
+- **Stills are cached as data URLs keyed by deviceId, and rows are found by
+  `[data-device-id]`.** `renderDropdownInputLists()` rebuilds the row DOM on any device or
+  selection change, which can happen mid-sweep, so a held node reference goes stale where a
+  cache entry does not. Re-opening shows the previous still immediately while a fresh sweep
+  replaces it, rather than flashing back to placeholders.
+- **The tile is a fixed 128x72, not the row width.** A first pass used `width: 100%` with
+  `aspect-ratio`, which measured 292x164 tiles and 218px rows in the single list — 1166px of
+  content in a 640px panel, so a four-input picker scrolled. At a fixed size the name fits
+  *beside* the tile in the single list (~322px rows) and *below* it in a dual column
+  (~149px). Two rules, each matching its width.
+- **Both open paths trigger it.** Hover (`mouseenter` on the trigger, which already existed
+  for the cursor) and touch (`toggleDropdown`). The panel's visibility is pure CSS, so that
+  listener is the only JS signal that a hover-open happened.
+
 ### Keyboard shortcuts live in one list (#258)
 
 `src/renderer/shortcuts.js` is the single source of truth: keys, the chips the UI
