@@ -59,6 +59,9 @@ import {
   inputKeyFor
 } from './shortcuts.js'
 
+// Snapshot thumbnails for the dropdown input rows (#242).
+import { createThumbnailStore } from './input-thumbnails.js'
+
 // Test-mode launch flags (#248).
 import {
   parseTestFlags,
@@ -1434,6 +1437,83 @@ function updateDropdownVisibility() {
  * Render the simplified dropdown input lists (enabled inputs only)
  */
 // =============================================================================
+// Input thumbnails (#242)
+// =============================================================================
+
+/**
+ * Snapshot store for the dropdown rows.
+ *
+ * Built once. Its dependencies are read at call time rather than captured, so it
+ * follows device changes, input switches and mock mode without being rebuilt.
+ */
+const inputThumbnails = createThumbnailStore({
+  listInputs: () => state.devices
+    .filter(d => isInputEnabled(d.deviceId))
+    .map(d => ({
+      deviceId: d.deviceId,
+      label: getInputName(d.deviceId, d.label || 'Input'),
+    })),
+
+  // An input already on screen needs no stream at all.
+  liveVideoFor: (deviceId) => {
+    if (deviceId === state.leftDeviceId && elements.leftVideo?.srcObject) {
+      return elements.leftVideo
+    }
+    if (deviceId === state.rightDeviceId && elements.rightVideo?.srcObject) {
+      return elements.rightVideo
+    }
+    return null
+  },
+
+  openTemporaryStream: async (deviceId, label) => {
+    // Mock inputs have no hardware behind them, so getUserMedia would reject.
+    // Without this branch the whole feature would be untestable in exactly the
+    // mode built for testing it (#248).
+    if (isMockDeviceId(deviceId)) {
+      return createMockStream({ label })
+    }
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { deviceId: { exact: deviceId } }
+    })
+    return {
+      stream,
+      stop: () => stream.getTracks().forEach(t => t.stop()),
+    }
+  },
+
+  onThumbnail: (deviceId, dataUrl) => paintThumbnail(deviceId, dataUrl),
+})
+
+/**
+ * Put a landed still onto every row showing that device.
+ *
+ * Queries the DOM fresh rather than holding node references: rows are rebuilt by
+ * renderDropdownInputLists() on any device or selection change, which can happen
+ * while a sweep is still running.
+ */
+function paintThumbnail(deviceId, dataUrl) {
+  const selector = `[data-device-id="${CSS.escape(deviceId)}"] .input-thumb`
+  for (const thumb of document.querySelectorAll(selector)) {
+    thumb.style.backgroundImage = `url("${dataUrl}")`
+    thumb.classList.add('has-thumb')
+  }
+}
+
+/**
+ * Start a snapshot sweep because the dropdown just opened.
+ *
+ * Both open paths land here -- hover (mouseenter) and touch (toggleDropdown) --
+ * and the store ignores a call while a sweep is already running, which is what
+ * makes repeated opening safe. A cold capture device takes long enough that the
+ * dropdown can easily be opened three times before the first still lands.
+ */
+function refreshInputThumbnails() {
+  inputThumbnails.sweep().catch(err => {
+    console.error('[Thumbnails] Sweep failed:', err)
+  })
+}
+
+// =============================================================================
 // Shortcut hints (#258)
 // =============================================================================
 
@@ -1549,11 +1629,32 @@ function renderDropdownInputLists() {
     const buildOption = (className, isActive, side, showKey) => {
       const option = document.createElement('div')
       option.className = `${className}${isActive ? ' selected' : ''}`
+      // The sweep finds rows by this rather than by held references (#242): rows
+      // are rebuilt on any device or selection change, which can happen while a
+      // sweep is still running.
+      option.dataset.deviceId = device.deviceId
+
+      // Snapshot tile. Rendered even before a still exists, so the row does not
+      // change height when one lands -- an empty tile is the placeholder.
+      const thumb = document.createElement('div')
+      thumb.className = 'input-thumb'
+      const cached = inputThumbnails.get(device.deviceId)
+      if (cached) {
+        thumb.style.backgroundImage = `url("${cached}")`
+        thumb.classList.add('has-thumb')
+      }
+      option.appendChild(thumb)
+
+      const label = document.createElement('span')
+      label.className = 'input-option-label'
+
       const name = document.createElement('span')
       name.className = 'input-option-name'
       name.textContent = customName
-      option.appendChild(name)
-      if (key && showKey) option.appendChild(shortcutKeyChip(key))
+      label.appendChild(name)
+      if (key && showKey) label.appendChild(shortcutKeyChip(key))
+      option.appendChild(label)
+
       option.addEventListener('click', () => {
         selectInputForSide(device.deviceId, side)
       })
@@ -1972,6 +2073,8 @@ function closeAllPanels() {
 function toggleDropdown() {
   state.dropdownOpen = !state.dropdownOpen
   updateDropdownState()
+  // Touch path into the dropdown (#242). Only on open; closing needs no sweep.
+  if (state.dropdownOpen) refreshInputThumbnails()
 }
 
 /**
@@ -2265,6 +2368,10 @@ function setupEventListeners() {
   elements.dropdownTrigger.addEventListener('mouseenter', () => {
     document.body.classList.add('cursor-visible')
     clearTimeout(state.cursorTimeout)
+    // Hover path into the dropdown (#242). The panel's visibility is pure CSS
+    // (#dropdown-trigger:hover + #dropdown-panel), so this listener -- which
+    // already existed for the cursor -- is the only JS signal that it opened.
+    refreshInputThumbnails()
   })
 
   elements.dropdownPanel.addEventListener('mouseenter', () => {

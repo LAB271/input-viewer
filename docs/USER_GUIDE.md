@@ -64,6 +64,12 @@ The app automatically selects the default mode based on your screen aspect ratio
 
 Open Settings via the dropdown menu (gear icon).
 
+Each input in the dropdown shows a **snapshot** of what it is currently sending, taken
+when the dropdown opens. These are stills, not live previews — they are as recent as the
+moment you opened the panel. An input that is not currently on screen is sampled briefly to
+take its picture; one that cannot be reached, or that has nothing plugged into it, keeps an
+empty tile.
+
 ### Inputs
 
 - **Enable/Disable** inputs using the toggle

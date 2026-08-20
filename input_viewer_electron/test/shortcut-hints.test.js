@@ -180,6 +180,28 @@ describe('the dropdown input rows', () => {
     expect(rows[1].textContent).toContain('Cam C')
   })
 
+  it('tags each row with its device id, which the sweep finds rows by', () => {
+    // paintThumbnail() queries [data-device-id] fresh rather than holding node
+    // references, because rows are rebuilt on any device or selection change --
+    // which can happen while a snapshot sweep is still running (#242).
+    reset([device('a', 'Cam A'), device('b', 'Cam B')])
+    renderDropdownInputLists()
+    for (const list of [elements.leftInputList, elements.rightInputList,
+      elements.singleInputList]) {
+      expect([...list.children].map(r => r.dataset.deviceId)).toEqual(['a', 'b'])
+    }
+  })
+
+  it('renders the snapshot tile before any snapshot exists', () => {
+    // The tile is its own placeholder, so a row does not change height when a
+    // still lands.
+    reset([device('a', 'Cam A')])
+    renderDropdownInputLists()
+    const tile = elements.leftInputList.querySelector('.input-thumb')
+    expect(tile).not.toBeNull()
+    expect(tile.classList.contains('has-thumb')).toBe(false)
+  })
+
   it('renders a device label as text, never as markup', () => {
     // Labels come from capture hardware or a user rename. The row is built from
     // elements with textContent for exactly this reason.
