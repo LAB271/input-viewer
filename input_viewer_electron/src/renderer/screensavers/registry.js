@@ -18,6 +18,7 @@
  * SCREENSAVERS array below. Pure fragment-shader ones can use
  * createShaderScreensaver from gl-base.js.
  */
+import { setNextRuntimeLabel } from './gl-base.js'
 import { seedFromClock } from './seed.js'
 import dvdLogo from './dvd-logo.js'
 import plasma from './plasma.js'
@@ -220,6 +221,8 @@ export function startScreensaver(selector, seed) {
   // value can be logged -- reproducing a look means knowing what to pass back.
   const resolvedSeed = seed === undefined || seed === null ? seedFromClock() : seed
   try {
+    // Name the runtime the saver is about to build, for the fps report.
+    setNextRuntimeLabel(saver.name)
     active = saver.create(canvasEl, resolvedSeed)
     active.start()
     running = true
@@ -236,6 +239,7 @@ export function startScreensaver(selector, seed) {
     if (saver !== SCREENSAVERS[0]) {
       activeIndex = 0
       lastIndex = 0
+      setNextRuntimeLabel(SCREENSAVERS[0].name)
       active = SCREENSAVERS[0].create(canvasEl, resolvedSeed)
       active.start()
       running = true
