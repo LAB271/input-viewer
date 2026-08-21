@@ -101,6 +101,12 @@ const state = {
     left: false,
     right: false
   },
+  // When each side went dark, for the board's downtime line (#154). Null while a
+  // side has signal.
+  noSignalSince: {
+    left: null,
+    right: null
+  },
   // Test-mode launch flags (#248). Defaults are the production values, so every
   // path below behaves exactly as it did before these flags existed unless one
   // is actually passed.
@@ -898,6 +904,83 @@ async function syncSystemVolume() {
   }
 }
 
+/**
+ * How long a feed has been down, as a board line (#154).
+ *
+ * Three forms rather than one, because a wall can be down for minutes or for days
+ * and a single unit reads wrong at both ends. The colon form only ever means
+ * minutes and seconds, so it is never ambiguous against the hour form.
+ *
+ * Exported for tests.
+ */
+function formatDowntime (ms) {
+  const total = Math.max(0, Math.floor(ms / 1000))
+  const mins = Math.floor(total / 60)
+  const secs = total % 60
+  if (total < 3600) {
+    return `DOWN ${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`
+  }
+  const hours = Math.floor(total / 3600)
+  if (hours < 24) return `DOWN ${hours}H ${String(mins % 60).padStart(2, '0')}M`
+  const days = Math.floor(hours / 24)
+  return `DOWN ${days}D ${String(hours % 24).padStart(2, '0')}H`
+}
+
+/**
+ * The rows to show on one side's board, or null when there is nothing live to say.
+ *
+ * Null rather than a half-filled set: the board falls back to its own static list,
+ * which is a better screen than "NO SIGNAL" over two blank rows.
+ *
+ * Exported for tests.
+ */
+function boardRowsFor (side, now = performance.now()) {
+  const deviceId = side === 'left' ? state.leftDeviceId : state.rightDeviceId
+  if (!deviceId) return null
+
+  const device = state.devices.find(d => d.deviceId === deviceId)
+  // Fall back to the raw label, then to the side: an unnamed input is still worth
+  // naming on the board, because "which input is this" is the question it answers.
+  const name = getInputName(deviceId, device?.label || side.toUpperCase())
+
+  const since = state.noSignalSince[side]
+  const rows = [name, 'NO SIGNAL']
+  if (since !== null) rows.push(formatDowntime(now - since))
+  return [rows]
+}
+
+/**
+ * Push the current live rows into whichever boards are running.
+ *
+ * Called when a board starts and then on a slow interval. The board applies rows
+ * on its next message change, so this only has to be more frequent than the hold
+ * period (5.5-9s) for the clock to look like it is running.
+ */
+function refreshNoSignalBoards () {
+  for (const side of ['left', 'right']) {
+    const board = noSignalBoards[side]
+    if (!board?.setMessages) continue
+    board.setMessages(boardRowsFor(side))
+  }
+}
+
+// How often the downtime line is refreshed. Longer than it looks: the board holds
+// each message 5.5-9s, so pushing faster than that only queues rows that are
+// replaced before they are ever laid out.
+const BOARD_REFRESH_MS = 5000
+let boardRefreshTimer = null
+
+/** Run the refresh only while at least one board exists. */
+function updateBoardRefreshTimer () {
+  const anyLive = Boolean(noSignalBoards.left || noSignalBoards.right)
+  if (anyLive && boardRefreshTimer === null) {
+    boardRefreshTimer = setInterval(refreshNoSignalBoards, BOARD_REFRESH_MS)
+  } else if (!anyLive && boardRefreshTimer !== null) {
+    clearInterval(boardRefreshTimer)
+    boardRefreshTimer = null
+  }
+}
+
 // Live split-flap board per side, one per no-signal overlay (#92).
 //
 // This is the *no-signal display*, not a screensaver: it appears the moment
@@ -920,6 +1003,10 @@ function startNoSignalBoard(side, overlay) {
     const board = splitFlap.create(canvas)
     board.start()
     noSignalBoards[side] = board
+    // Live rows before the first message change, so the board opens on the input
+    // name rather than showing the static list for a hold period first (#154).
+    board.setMessages(boardRowsFor(side))
+    updateBoardRefreshTimer()
     // Hide the HTML fallback only once the board is actually running.
     overlay.classList.add('board-active')
   } catch (err) {
@@ -933,6 +1020,7 @@ function stopNoSignalBoard(side, overlay) {
   if (!noSignalBoards[side]) return
   try { noSignalBoards[side].stop() } catch { /* already torn down */ }
   noSignalBoards[side] = null
+  updateBoardRefreshTimer()
   overlay.classList.remove('board-active')
 }
 
@@ -941,6 +1029,12 @@ function showNoSignal(side) {
   const overlay = feed.querySelector('.no-signal-overlay')
   overlay.classList.remove('hidden')
   state.noSignalState[side] = true
+  // Only on the transition into no-signal (#154). showNoSignal is idempotent and
+  // gets called again on a synced same-device pair, and restarting the clock on
+  // each call would peg the downtime line near zero forever.
+  if (state.noSignalSince[side] === null) {
+    state.noSignalSince[side] = performance.now()
+  }
   startNoSignalBoard(side, overlay)
 }
 
@@ -956,6 +1050,7 @@ function hideNoSignal(side) {
   const overlay = feed.querySelector('.no-signal-overlay')
   overlay.classList.add('hidden')
   state.noSignalState[side] = false
+  state.noSignalSince[side] = null
   // Release the GL context rather than leaving it running behind a hidden
   // overlay -- two idle WebGL contexts per wall is real GPU memory.
   stopNoSignalBoard(side, overlay)
@@ -3450,6 +3545,9 @@ export {
   // the coverage stopped at compareFrames, one layer below the state change.
   showNoSignal,
   hideNoSignal,
+  formatDowntime,
+  boardRowsFor,
+  refreshNoSignalBoards,
   applyForcedNoSignal,
   updateDvdScreensaver,
   // Exported so the rendered hints are testable against the shared list (#258).

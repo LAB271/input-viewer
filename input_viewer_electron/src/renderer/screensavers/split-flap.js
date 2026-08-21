@@ -50,9 +50,48 @@ const MESSAGES = [
 // derived from the aspect ratio alone, so a 16:9 display got 8 columns for a
 // 14-character line and every message was silently clipped -- "NO SIGNAL"
 // rendered as "NO SIGNA".
+//
+// Deliberately measured over the BUILT-IN messages only, even though setMessages()
+// (#154) can now supply others. The floor guarantees the static set always fits;
+// live text is truncated to the grid instead of widening it. Growing `cols` at
+// runtime would mean reallocating the tile arrays and the state texture mid-flight,
+// and #154 explicitly allows truncation -- so the cheap, safe option is also the
+// sanctioned one.
 const LONGEST_LINE = MESSAGES.reduce(
   (max, rows) => rows.reduce((m, line) => Math.max(m, line.length), max), 0)
 const MIN_COLS = LONGEST_LINE + 2
+
+/**
+ * Is this a usable set of message rows?
+ *
+ * Live rows arrive from the renderer, so a malformed push must leave the board
+ * showing the static list rather than a grid of blanks.
+ */
+export function isValidMessageSets(sets) {
+  return Array.isArray(sets) &&
+    sets.length > 0 &&
+    sets.every(rows =>
+      Array.isArray(rows) &&
+      rows.length > 0 &&
+      rows.length <= ROWS &&
+      rows.every(line => typeof line === 'string'))
+}
+
+/**
+ * Fit a line to `cols` tiles, marking a cut rather than dropping characters
+ * silently.
+ *
+ * Silent clipping is the exact failure #92 fixed ("NO SIGNAL" as "NO SIGNA"), so a
+ * truncated live label ends in a period -- which is in FLAP_CHARS and reads as an
+ * abbreviation rather than as a rendering fault.
+ */
+export function fitLine(line, cols) {
+  const text = String(line ?? '').toUpperCase()
+  if (cols <= 0) return ''
+  if (text.length <= cols) return text
+  if (cols === 1) return '.'
+  return text.slice(0, cols - 1) + '.'
+}
 
 const FRAG = /* glsl */ `#version 300 es
 precision highp float;
@@ -193,6 +232,11 @@ export default {
     const flapRate = rng.range(11, 17)
     // How long a completed message is held before the next one.
     const holdSeconds = rng.range(5.5, 9.0)
+    // The rows currently on the board. Starts as the built-in list and is replaced
+    // by setMessages() (#154) when the renderer has live state to show. Held here
+    // rather than read from the module constant so a board can be showing live
+    // text while another shows the static list.
+    let messages = MESSAGES
     let messageOrder = MESSAGES.map((_, i) => i)
     // Shuffle so activations do not always open on the same message.
     for (let i = messageOrder.length - 1; i > 0; i--) {
@@ -216,11 +260,11 @@ export default {
 
     /** Lay a message out, centred per row. */
     function setMessage(idx) {
-      const rows = MESSAGES[messageOrder[idx % messageOrder.length]]
+      const rows = messages[messageOrder[idx % messageOrder.length]] || []
       for (let r = 0; r < ROWS; r++) {
         // Row 0 of the texture is the bottom of the board, so draw the first
         // line of text at the top.
-        const text = (rows[r] || '').toUpperCase()
+        const text = fitLine(rows[r] || '', cols)
         const texRow = ROWS - 1 - r
         // Centre the word rather than left-aligning: on a wide board, text
         // jammed against the left edge is one of the failure modes #92 lists.
@@ -237,6 +281,35 @@ export default {
     }
 
     return {
+      /**
+       * Replace the rows the board cycles through (#154).
+       *
+       * The board stays a dumb renderer of whatever rows it is handed: all
+       * knowledge of inputs, sides and downtime lives in the renderer, which is
+       * the least-coupled of the three options #154 weighed. It was chosen over
+       * passing app state into create() because this board is not a registry entry
+       * -- renderer.js imports it directly -- so nothing had to change about the
+       * saver contract to do it this way.
+       *
+       * Applied on the NEXT message change rather than immediately, so a push does
+       * not interrupt a flap already in progress. With a single-entry list that
+       * means the board re-flaps the same rows each hold period, which is exactly
+       * what makes a ticking clock read as a mechanism rather than a redraw.
+       *
+       * A malformed or empty push restores the built-in list, so the board can
+       * never end up showing a grid of blanks because the renderer had nothing.
+       *
+       * @param {string[][]|null} sets rows per message, each up to ROWS lines
+       */
+      setMessages(sets) {
+        const next = isValidMessageSets(sets) ? sets : MESSAGES
+        if (next === messages) return
+        messages = next
+        // Rebuild the order for the new length. Not shuffled: a live board is
+        // showing facts, and cycling them in a random order reads as instability.
+        messageOrder = messages.map((_, i) => i)
+      },
+
       start() {
         runtime = createGLRuntime(canvas)
         gl = runtime.gl
