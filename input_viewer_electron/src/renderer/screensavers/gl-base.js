@@ -247,6 +247,32 @@ export function observeFrames(fn) {
   }
 }
 
+/** How many observers are registered. Exported so the wiring is testable. */
+export function frameObserverCount() {
+  return frameObservers.length
+}
+
+/**
+ * Smallest gap between readbacks.
+ *
+ * The readback used to run on EVERY frame, and the doc here said observers were
+ * "expected to rate-limit itself". They can only rate-limit the *send* -- the
+ * readback has already happened by the time they are called, so the expensive part
+ * was never limited by anything.
+ *
+ * That cost 40x on the videowall. Each notify does TILES_X*TILES_Y = 32 synchronous
+ * gl.readPixels, and a sync readback on a DISCRETE GPU is a full pipeline stall plus
+ * a PCIe transfer. Two split-flap boards in dual view are two runtimes, so 64 stalls
+ * per frame: the wall measured 1.4 fps where the same board manages 118.9 in a
+ * harness that registers no observer. It went unnoticed because the development
+ * machine is Apple Silicon, where unified memory makes readPixels nearly free -- the
+ * same test there measured 4%.
+ *
+ * 1Hz because the only consumer (Art-Net, #59) sends at 1Hz. Sampling faster than
+ * the consumer can use is the definition of waste.
+ */
+const FRAME_OBSERVER_MIN_INTERVAL_MS = 1000
+
 /**
  * Create a WebGL2 runtime bound to a canvas. Returns helpers for building
  * fullscreen-quad shader programs and running an animation loop.
@@ -317,6 +343,8 @@ export function createGLRuntime(canvas, options = {}) {
   const TILES_X = 8
   const TILES_Y = 4
   const SAMPLE_COUNT = TILE * TILE * TILES_X * TILES_Y
+  // Per-runtime, so two runtimes do not starve each other of readbacks.
+  let lastObserverNotify = 0
   let samplePixels = null
   let tileBuf = null
 
@@ -471,8 +499,16 @@ export function createGLRuntime(canvas, options = {}) {
       // reliably read it -- ordering against the saver's own callback is not
       // guaranteed. Runs after onFrame so it sees the finished image.
       //
-      // No observer means one branch per frame and nothing else.
-      if (frameObservers.length) notifyFrameObservers()
+      // No observer means one branch per frame and nothing else. With one, the
+      // readback is rate-limited here rather than left to the observer -- see
+      // FRAME_OBSERVER_MIN_INTERVAL_MS for why that distinction cost 40x.
+      if (frameObservers.length) {
+        const nowMs = performance.now()
+        if (nowMs - lastObserverNotify >= FRAME_OBSERVER_MIN_INTERVAL_MS) {
+          lastObserverNotify = nowMs
+          notifyFrameObservers()
+        }
+      }
       frame++
       // The whole instrument: one increment. See liveRuntimes.
       counter.frames++

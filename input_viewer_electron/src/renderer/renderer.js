@@ -240,6 +240,11 @@ async function loadSettings() {
 }
 
 async function saveSettings() {
+  // Every settings change funnels through here, so this is the one place that
+  // catches Art-Net being toggled regardless of which control did it. Ahead of the
+  // mock-mode guard below, because registering an observer is not writing settings.
+  syncArtnetFrameObserver()
+
   // Mock mode never writes settings (#248).
   //
   // Not a convenience -- a correctness guard. getVideoDevices() creates an
@@ -1539,6 +1544,42 @@ function updateDropdownVisibility() {
 /**
  * Render the simplified dropdown input lists (enabled inputs only)
  */
+// =============================================================================
+// Art-Net frame observer
+// =============================================================================
+
+/**
+ * Registered only while Art-Net is actually enabled.
+ *
+ * It used to be registered unconditionally at startup "because the observer is a
+ * no-op while disabled". The observer was -- the READBACK was not. gl-base reads the
+ * frame before calling anyone, so a disabled Art-Net still paid for 32 synchronous
+ * gl.readPixels per frame per runtime.
+ *
+ * On the videowall that measured 1.4 fps on the split-flap board, against 118.9 in a
+ * harness that registers no observer, with `artnetEnabled: false` in its settings the
+ * whole time. Every one of those stalls fed a callback that did nothing.
+ *
+ * Re-evaluated whenever settings are saved rather than read once, so toggling
+ * Art-Net still takes effect without a restart -- which is the property the original
+ * unconditional registration was protecting.
+ */
+let artnetFrameUnsub = null
+
+function syncArtnetFrameObserver () {
+  const want = Boolean(state.settings?.artnetEnabled)
+  if (want && !artnetFrameUnsub) {
+    // getArtnetSync() rather than a captured reference, so this does not pin an
+    // instance from before a reinstall.
+    artnetFrameUnsub = observeFrames((rgba) => getArtnetSync()?.offerFrame(rgba))
+    console.log('[Art-Net] frame observer registered')
+  } else if (!want && artnetFrameUnsub) {
+    artnetFrameUnsub()
+    artnetFrameUnsub = null
+    console.log('[Art-Net] frame observer removed; per-frame readback stopped')
+  }
+}
+
 // =============================================================================
 // Frame-rate report
 // =============================================================================
@@ -3584,7 +3625,7 @@ async function init() {
   // observer is a no-op while disabled, and gl-base only pays for the readback
   // when at least one observer exists. offerFrame() owns its own rate limiting
   // (1Hz) and backoff, so this callback stays a single call per frame.
-  const artnet = installArtnetSync({
+  installArtnetSync({
     getConfig: () => ({
       enabled: Boolean(state.settings.artnetEnabled),
       url: state.settings.artnetUrl,
@@ -3593,7 +3634,7 @@ async function init() {
       maxBrightness: state.settings.artnetMaxBrightness
     })
   })
-  observeFrames((rgba) => artnet.offerFrame(rgba))
+  syncArtnetFrameObserver()
 
   // Experimental WebGPU compositing. No-op unless enabled in settings, and
   // failures leave the CSS path in place, so this cannot block startup.
@@ -3674,6 +3715,7 @@ export {
   boardRowsFor,
   accumulateFrameStats,
   formatFpsReport,
+  syncArtnetFrameObserver,
   refreshNoSignalBoards,
   applyForcedNoSignal,
   updateDvdScreensaver,
