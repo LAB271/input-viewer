@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: 2025-2026 Schuberg Philis / Lab271
-const { app, BrowserWindow, ipcMain, systemPreferences, dialog, shell } = require('electron')
+const { app, BrowserWindow, ipcMain, systemPreferences, dialog, shell, screen } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const { exec } = require('child_process')
@@ -288,9 +288,45 @@ function diagLogPath() {
   return path.join(app.getPath('userData'), 'detection-diagnostic.log')
 }
 
+// Ceiling on the detection diagnostic log.
+//
+// This appends one line per detection cycle (~1.6s) while debug logging is on,
+// which is fine on a laptop for ten minutes and is not fine on a videowall that
+// runs for months -- roughly 54k lines a day, unbounded. Nothing trimmed it.
+//
+// 2 MiB holds several days of cycles, which is far more history than anyone reads,
+// and the trim keeps the NEWEST half: a diagnostic is being read because something
+// just happened, so the tail is the useful end.
+const DIAG_LOG_MAX_BYTES = 2 * 1024 * 1024
+
+function trimDiagLog(file) {
+  let size
+  try {
+    size = fs.statSync(file).size
+  } catch {
+    return // no file yet
+  }
+  if (size <= DIAG_LOG_MAX_BYTES) return
+  try {
+    const keep = Math.floor(DIAG_LOG_MAX_BYTES / 2)
+    const fd = fs.openSync(file, 'r')
+    const buf = Buffer.alloc(keep)
+    fs.readSync(fd, buf, 0, keep, size - keep)
+    fs.closeSync(fd)
+    // Drop the leading partial line so the file always starts mid-record-free.
+    const text = buf.toString('utf8')
+    const from = text.indexOf('\n')
+    fs.writeFileSync(file, from === -1 ? text : text.slice(from + 1))
+    console.log(`[Diag] trimmed log to ${keep} bytes (was ${size})`)
+  } catch (err) {
+    console.error('[Diag] trim failed:', err)
+  }
+}
+
 ipcMain.handle('diag-log', (event, lines) => {
   const file = diagLogPath()
   try {
+    trimDiagLog(file)
     fs.appendFileSync(file, lines.join('\n') + '\n')
     console.log('[Diag] wrote', lines.length, 'lines to', file)
     return file
@@ -394,6 +430,83 @@ ipcMain.handle('get-app-version', () => {
 // renderer parses and reports on them.
 ipcMain.handle('get-test-flag-args', () => {
   return testFlagArgs()
+})
+
+// GPU report: is this machine actually rendering on a GPU?
+//
+// Written because there was no way to tell from a running wall. The app sets
+// ignore-gpu-blocklist and enable-gpu-rasterization, so someone has fought this
+// before, but nothing ever reported which path it got -- making "the wall fell
+// back to software rendering" an unfalsifiable guess. The screensavers are
+// fill-rate bound and the split-flap board measures 118.9 fps at 6000x1200 on a
+// real GPU, so a wall that struggles with it is not merely a slower GPU.
+//
+// **One file, overwritten, one write per launch.** Not appended, and nothing
+// periodic. GPU capabilities do not change while the app runs, so there is nothing
+// to sample -- the size is bounded by its content (a couple of KB) rather than by
+// uptime, which is the property that matters on a machine left running for months.
+const GPU_REPORT_MAX_LINES = 200
+
+function gpuReportPath() {
+  return path.join(app.getPath('userData'), 'gpu-report.txt')
+}
+
+ipcMain.handle('write-gpu-report', async (event, rendererInfo) => {
+  const file = gpuReportPath()
+  const lines = []
+  const put = (k, v) => lines.push(`${String(k).padEnd(30)}${v}`)
+
+  try {
+    lines.push(`Input Viewer ${app.getVersion()} -- GPU report`)
+    lines.push('Overwritten on every launch; nothing here is appended.')
+    lines.push('')
+
+    put('platform', `${process.platform} ${process.arch}`)
+    put('electron', process.versions.electron)
+    put('chrome', process.versions.chrome)
+    try {
+      const d = screen.getPrimaryDisplay()
+      put('primary display', `${d.size.width}x${d.size.height} @${d.scaleFactor}x`)
+    } catch { put('primary display', 'unavailable') }
+    lines.push('')
+
+    // The single most diagnostic line in the file. A renderer string containing
+    // SwiftShader or "Software" means every shader in this app is running on the
+    // CPU, which no amount of optimisation will rescue.
+    lines.push('--- WebGL, as the renderer process sees it ---')
+    if (rendererInfo && typeof rendererInfo === 'object') {
+      for (const [k, v] of Object.entries(rendererInfo)) put(k, v)
+    } else {
+      put('renderer info', 'not supplied')
+    }
+    lines.push('')
+
+    lines.push('--- GPU feature status ---')
+    const status = app.getGPUFeatureStatus() || {}
+    for (const k of Object.keys(status).sort()) put(k, status[k])
+    lines.push('')
+
+    lines.push('--- GPU info (basic) ---')
+    try {
+      const info = await app.getGPUInfo('basic')
+      lines.push(JSON.stringify(info, null, 2))
+    } catch (err) {
+      put('getGPUInfo', `failed: ${err.message}`)
+    }
+
+    // Belt and braces on the size guarantee: even a driver returning something
+    // pathological cannot turn this into a large file.
+    const out = lines.slice(0, GPU_REPORT_MAX_LINES).join('\n') + '\n'
+    fs.writeFileSync(file, out)
+    console.log(`[GPU] report written to ${file}`)
+    // Echoed to the console as well, so `npm run dev` shows it without opening
+    // the file -- which is where it will actually get read during a diagnosis.
+    console.log(out)
+    return file
+  } catch (err) {
+    console.error('[GPU] report failed:', err)
+    return null
+  }
 })
 
 // Get system volume (0-100)
