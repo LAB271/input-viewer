@@ -1442,6 +1442,74 @@ function updateDropdownVisibility() {
  * Render the simplified dropdown input lists (enabled inputs only)
  */
 // =============================================================================
+// GPU report
+// =============================================================================
+
+/**
+ * What this renderer can see of its own WebGL implementation.
+ *
+ * Uses a throwaway 1x1 context rather than the screensaver canvas: that canvas
+ * gets one context for the life of the page (asking it for a different type
+ * returns null forever after), and this must not be the call that claims it.
+ * The context is explicitly released rather than left for the GC, because a
+ * browser only allows a small number of live WebGL contexts.
+ */
+function collectWebglInfo() {
+  const out = {}
+  let gl = null
+  try {
+    const canvas = document.createElement('canvas')
+    canvas.width = 1
+    canvas.height = 1
+    gl = canvas.getContext('webgl2')
+    if (!gl) {
+      out['webgl2'] = 'UNAVAILABLE -- this alone would explain everything'
+      return out
+    }
+    out['webgl2'] = 'available'
+
+    // The line that answers the question. A renderer string containing
+    // SwiftShader or Software means the shaders are running on the CPU.
+    const dbg = gl.getExtension('WEBGL_debug_renderer_info')
+    if (dbg) {
+      out['gl renderer'] = gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL)
+      out['gl vendor'] = gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL)
+    } else {
+      out['gl renderer'] = 'masked (WEBGL_debug_renderer_info unavailable)'
+    }
+    out['gl version'] = gl.getParameter(gl.VERSION)
+    out['max texture size'] = gl.getParameter(gl.MAX_TEXTURE_SIZE)
+    // Float colour targets back the HDR path every post-processed saver uses;
+    // without them those savers fall back or fail.
+    out['EXT_color_buffer_float'] =
+      gl.getExtension('EXT_color_buffer_float') ? 'yes' : 'NO'
+    out['device pixel ratio'] = String(window.devicePixelRatio || 1)
+    out['canvas size'] = `${window.innerWidth}x${window.innerHeight}`
+  } catch (err) {
+    out['error'] = String(err)
+  } finally {
+    // Releasing the context is the part that matters; a browser allows only a
+    // small number of live WebGL contexts, and this one is needed for two reads.
+    try { gl?.getExtension('WEBGL_lose_context')?.loseContext() } catch { /* fine */ }
+  }
+  return out
+}
+
+/**
+ * Write the GPU report, once, at startup.
+ *
+ * Deliberately not repeated and not sampled: GPU capabilities are fixed for the
+ * life of the process, so there is nothing to watch. One write per launch into a
+ * file that is overwritten, which is what keeps a wall running for months from
+ * accumulating anything.
+ */
+function reportGpu() {
+  if (!window.electronAPI?.writeGpuReport) return
+  window.electronAPI.writeGpuReport(collectWebglInfo())
+    .catch(err => console.error('[GPU] report failed:', err))
+}
+
+// =============================================================================
 // Input thumbnails (#242)
 // =============================================================================
 
@@ -3331,6 +3399,10 @@ async function init() {
   // these sit alongside.
   renderShortcutHints()
   renderShortcutLegend()
+
+  // GPU report. After the rest of init, so the GPU process is up and the numbers
+  // are the ones this session will actually run with.
+  reportGpu()
 
   // Show cursor initially
   showCursor()

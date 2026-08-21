@@ -25,6 +25,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // test flags; the renderer parses them with test-flags.js.
   getTestFlagArgs: () => ipcRenderer.invoke('get-test-flag-args'),
 
+  // GPU report. Called once at startup with what the renderer can see of its own
+  // WebGL implementation; main combines it with the process-level GPU status and
+  // writes a single overwritten file.
+  writeGpuReport: (rendererInfo) => ipcRenderer.invoke('write-gpu-report', rendererInfo),
+
   // System volume control
   getSystemVolume: () => ipcRenderer.invoke('get-system-volume'),
   setSystemVolume: (volume) => ipcRenderer.invoke('set-system-volume', volume),
