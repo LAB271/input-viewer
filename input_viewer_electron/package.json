@@ -1,6 +1,6 @@
 {
   "name": "input-viewer",
-  "version": "2.18.0",
+  "version": "2.18.1",
   "description": "A lightweight video input viewer - OBS without the complexity",
   "main": "./out/main/index.js",
   "author": {
