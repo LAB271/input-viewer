@@ -451,6 +451,30 @@ function gpuReportPath() {
   return path.join(app.getPath('userData'), 'gpu-report.txt')
 }
 
+// Frame-rate report (fps-report.txt).
+//
+// Same discipline as the GPU report and for the same reason: **one file,
+// overwritten, never appended.** The renderer holds one row per saver in memory and
+// sends a formatted body, so the size is bounded by the number of savers -- about
+// 32 rows -- rather than by how long the wall has been running. A 60s cadence on a
+// few KB of overwrite is nothing; the same cadence on an append would be the
+// gigabytes this was asked to avoid.
+const FPS_REPORT_MAX_LINES = 60
+
+ipcMain.handle('write-fps-report', (event, body) => {
+  const file = path.join(app.getPath('userData'), 'fps-report.txt')
+  try {
+    const header = `Input Viewer ${app.getVersion()} -- frame rate report\n` +
+      `written ${new Date().toISOString()}\n`
+    const lines = String(body ?? '').split('\n').slice(0, FPS_REPORT_MAX_LINES)
+    fs.writeFileSync(file, header + lines.join('\n') + '\n')
+    return file
+  } catch (err) {
+    console.error('[FPS] report write failed:', err)
+    return null
+  }
+})
+
 ipcMain.handle('write-gpu-report', async (event, rendererInfo) => {
   const file = gpuReportPath()
   const lines = []
