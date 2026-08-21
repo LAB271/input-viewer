@@ -183,6 +183,62 @@ const frameObservers = []
  * @param {(rgba: Uint8Array, pixelCount: number) => void} fn
  * @returns {() => void} unsubscribe
  */
+/**
+ * Live frame counters, one per running runtime.
+ *
+ * The wall reported lag that none of the measurements on a dev machine reproduce,
+ * and there was no way to see the frame rate the wall was actually achieving.
+ * This is the cheapest possible instrument: one property increment per frame in a
+ * loop that already increments a counter, and nothing else on the hot path. No
+ * readback, no allocation, no timing call.
+ *
+ * Keyed by label so several concurrent runtimes stay distinguishable -- in dual
+ * view with no signal there are two split-flap boards AND possibly a screensaver,
+ * each with its own runtime, and an aggregate figure would hide which one is slow.
+ */
+const liveRuntimes = new Set()
+
+/**
+ * Label the next runtime that gets created.
+ *
+ * The 30 savers all call createGLRuntime(canvas) from inside their own create(),
+ * so the name lives one level up -- in the registry, which knows which entry it is
+ * instantiating. Rather than thread a label through 30 files, whoever is about to
+ * instantiate announces it here.
+ *
+ * Consumed on use, so a label cannot leak onto an unrelated runtime built later.
+ */
+let pendingRuntimeLabel = null
+export function setNextRuntimeLabel(label) {
+  pendingRuntimeLabel = label || null
+}
+
+/**
+ * Read and reset every live runtime's frame count.
+ *
+ * Returns one entry per runtime with the frames drawn and the wall-clock interval
+ * they were drawn over, leaving the caller to compute a rate -- so a caller that
+ * samples irregularly still gets an honest number.
+ *
+ * @returns {Array<{label: string, frames: number, seconds: number, width: number, height: number}>}
+ */
+export function sampleFrameCounters(now = performance.now()) {
+  const out = []
+  for (const rec of liveRuntimes) {
+    const seconds = (now - rec.since) / 1000
+    out.push({
+      label: rec.label,
+      frames: rec.frames,
+      seconds,
+      width: rec.canvas.width,
+      height: rec.canvas.height,
+    })
+    rec.frames = 0
+    rec.since = now
+  }
+  return out
+}
+
 export function observeFrames(fn) {
   frameObservers.push(fn)
   return () => {
@@ -204,7 +260,7 @@ export function observeFrames(fn) {
  * @param {HTMLCanvasElement} canvas
  * @returns {object} runtime
  */
-export function createGLRuntime(canvas) {
+export function createGLRuntime(canvas, options = {}) {
   const gl = canvas.getContext('webgl2', {
     antialias: true,
     alpha: false,
@@ -213,6 +269,16 @@ export function createGLRuntime(canvas) {
   if (!gl) {
     throw new Error('WebGL2 is not available')
   }
+
+  // Frame counter for this runtime. `label` is what shows up in the fps report;
+  // anonymous runtimes are still counted so the total is never misleading.
+  const counter = {
+    label: options.label || pendingRuntimeLabel || 'unlabelled',
+    frames: 0,
+    since: 0,
+    canvas,
+  }
+  pendingRuntimeLabel = null
 
   // Fullscreen quad (two triangles covering clip space).
   const quad = new Float32Array([-1, -1, 3, -1, -1, 3])
@@ -384,6 +450,11 @@ export function createGLRuntime(canvas) {
     lastTime = 0
     dt = FALLBACK_DT
     resize()
+    // Registered on start rather than on create, so a runtime that is built and
+    // never started does not appear as a 0 fps entry.
+    counter.frames = 0
+    counter.since = performance.now()
+    liveRuntimes.add(counter)
     const loop = () => {
       resize()
       const time = (performance.now() - startTime) / 1000
@@ -403,6 +474,8 @@ export function createGLRuntime(canvas) {
       // No observer means one branch per frame and nothing else.
       if (frameObservers.length) notifyFrameObservers()
       frame++
+      // The whole instrument: one increment. See liveRuntimes.
+      counter.frames++
       rafId = requestAnimationFrame(loop)
     }
     rafId = requestAnimationFrame(loop)
@@ -414,6 +487,9 @@ export function createGLRuntime(canvas) {
       rafId = null
     }
     onFrame = null
+    // Dropped on stop, so a rotated-away saver stops reporting rather than
+    // lingering at whatever rate it last managed.
+    liveRuntimes.delete(counter)
   }
 
   function destroy() {

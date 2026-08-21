@@ -30,6 +30,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // writes a single overwritten file.
   writeGpuReport: (rendererInfo) => ipcRenderer.invoke('write-gpu-report', rendererInfo),
 
+  // Frame-rate report. One overwritten file; the renderer sends a formatted body
+  // rather than raw samples, so main stays a dumb writer.
+  writeFpsReport: (body) => ipcRenderer.invoke('write-fps-report', body),
+
   // System volume control
   getSystemVolume: () => ipcRenderer.invoke('get-system-volume'),
   setSystemVolume: (volume) => ipcRenderer.invoke('set-system-volume', volume),

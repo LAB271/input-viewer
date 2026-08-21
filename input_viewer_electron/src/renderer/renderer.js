@@ -45,7 +45,7 @@ import {
 } from './screensavers/registry.js'
 import { installWeatherSource } from './screensavers/weather-source.js'
 import { installArtnetSync, getArtnetSync } from './screensavers/artnet-sync.js'
-import { observeFrames } from './screensavers/gl-base.js'
+import { observeFrames, sampleFrameCounters, setNextRuntimeLabel } from './screensavers/gl-base.js'
 
 // Imported directly rather than through the registry: the split-flap board is
 // the no-signal display, not one of the rotating screensavers (#92).
@@ -1000,6 +1000,9 @@ function startNoSignalBoard(side, overlay) {
   canvas.width = Math.max(1, Math.round(rect.width))
   canvas.height = Math.max(1, Math.round(rect.height))
   try {
+    // Named per side: in dual view there are two boards, each its own runtime, and
+    // an aggregate would hide one being slower than the other.
+    setNextRuntimeLabel(`Split Flap (${side})`)
     const board = splitFlap.create(canvas)
     board.start()
     noSignalBoards[side] = board
@@ -1536,6 +1539,124 @@ function updateDropdownVisibility() {
 /**
  * Render the simplified dropdown input lists (enabled inputs only)
  */
+// =============================================================================
+// Frame-rate report
+// =============================================================================
+
+/**
+ * Per-label frame-rate statistics, accumulated in memory.
+ *
+ * Exists because the wall reported lag that no measurement on a dev machine
+ * reproduces, and nothing told us the frame rate the wall was actually achieving.
+ * The GPU report established the hardware is healthy and the renderer is on D3D11;
+ * this answers the next question, which is what it manages at 6000x1200.
+ *
+ * **Bounded by the number of savers, not by uptime.** One row per label ever seen
+ * -- 30 savers plus two boards is the ceiling -- each holding six numbers. The file
+ * is overwritten, never appended, same as the GPU report. A wall running for months
+ * accumulates a few KB, once.
+ */
+const FPS_SAMPLE_MS = 15_000
+const FPS_REPORT_MS = 60_000
+
+// Ignore a sample interval shorter than this: a saver that started or stopped
+// mid-interval drew for only part of it, and dividing by the full interval would
+// invent a low frame rate that never happened.
+const FPS_MIN_SAMPLE_SECONDS = 3
+
+/** @type {Map<string, {samples:number,frames:number,seconds:number,min:number,max:number,last:number,size:string}>} */
+const fpsStats = new Map()
+
+/**
+ * Fold one round of frame counters into the running statistics.
+ *
+ * Exported for tests: this is the arithmetic worth pinning, and it needs no GL.
+ */
+function accumulateFrameStats (samples, stats = fpsStats) {
+  for (const s of samples) {
+    if (s.seconds < FPS_MIN_SAMPLE_SECONDS) continue
+    const fps = s.frames / s.seconds
+    const prev = stats.get(s.label)
+    if (!prev) {
+      stats.set(s.label, {
+        samples: 1,
+        frames: s.frames,
+        seconds: s.seconds,
+        min: fps,
+        max: fps,
+        last: fps,
+        size: `${s.width}x${s.height}`,
+      })
+      continue
+    }
+    prev.samples++
+    prev.frames += s.frames
+    prev.seconds += s.seconds
+    prev.min = Math.min(prev.min, fps)
+    prev.max = Math.max(prev.max, fps)
+    prev.last = fps
+    prev.size = `${s.width}x${s.height}`
+  }
+  return stats
+}
+
+/**
+ * The report body: one line per label, worst mean first.
+ *
+ * Sorted by mean rather than by name because the question being asked is always
+ * "what is slowest", and on a 30-row table alphabetical order buries the answer.
+ *
+ * Exported for tests.
+ */
+function formatFpsReport (stats = fpsStats) {
+  const rows = [...stats.entries()]
+    .map(([label, v]) => ({ label, mean: v.frames / v.seconds, ...v }))
+    .sort((a, b) => a.mean - b.mean)
+
+  const lines = []
+  lines.push('Overwritten on every write; nothing here is appended.')
+  lines.push('')
+  if (rows.length === 0) {
+    lines.push('No frames counted yet.')
+    return lines.join('\n')
+  }
+  lines.push(
+    'saver'.padEnd(26) + 'mean'.padStart(7) + 'min'.padStart(7) +
+    'max'.padStart(7) + 'last'.padStart(7) + '  n'.padStart(4) + '  size')
+  for (const r of rows) {
+    lines.push(
+      r.label.slice(0, 25).padEnd(26) +
+      r.mean.toFixed(1).padStart(7) +
+      r.min.toFixed(1).padStart(7) +
+      r.max.toFixed(1).padStart(7) +
+      r.last.toFixed(1).padStart(7) +
+      String(r.samples).padStart(4) + '  ' + r.size)
+  }
+  return lines.join('\n')
+}
+
+// Only the sample timer is held, as the re-entry guard. Both intervals run for the
+// app's lifetime -- there is no state in which the wall wants to stop knowing its
+// frame rate -- so a handle for the second one would be state nobody reads.
+let fpsSampleTimer = null
+
+/**
+ * Start sampling. Two timers on purpose: counters are read often enough that a
+ * short-lived saver is not missed, and written to disk rarely, because the file is
+ * the part with a cost.
+ */
+function startFpsInstrumentation () {
+  if (fpsSampleTimer !== null) return
+  fpsSampleTimer = setInterval(() => {
+    accumulateFrameStats(sampleFrameCounters())
+  }, FPS_SAMPLE_MS)
+  setInterval(() => {
+    if (fpsStats.size === 0) return
+    window.electronAPI?.writeFpsReport?.(formatFpsReport())
+      .catch(err => console.error('[FPS] report failed:', err))
+  }, FPS_REPORT_MS)
+}
+
 // =============================================================================
 // GPU report
 // =============================================================================
@@ -3499,6 +3620,10 @@ async function init() {
   // are the ones this session will actually run with.
   reportGpu()
 
+  // Frame-rate sampling. Cheap enough to leave on: one property increment per
+  // frame, a counter read every 15s, and one overwritten file every 60s.
+  startFpsInstrumentation()
+
   // Show cursor initially
   showCursor()
 
@@ -3547,6 +3672,8 @@ export {
   hideNoSignal,
   formatDowntime,
   boardRowsFor,
+  accumulateFrameStats,
+  formatFpsReport,
   refreshNoSignalBoards,
   applyForcedNoSignal,
   updateDvdScreensaver,
