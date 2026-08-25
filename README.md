@@ -158,12 +158,17 @@ and physically changes the lighting. To enable it:
   "artnetUrl": "http://pi.labs:8000",
   "artnetTarget": "all",
   "artnetMaxBrightness": 0.8,
-  "artnetReleaseScene": ""
+  "artnetReleaseScene": "",
+  "artnetSpotDepth": 0.5
 }
 ```
 
 - **`artnetTarget`** — `all`, `group:<name>` or `strip:<name>`, mapping to the
-  relay's `/all`, `/groups/{name}` and `/strips/{name}` endpoints.
+  relay's `/all`, `/groups/{name}` and `/strips/{name}` endpoints. Or
+  `effect:<name>` to run one of the relay's field effects instead of a flat
+  colour — see **Spot mode** below.
+- **`artnetSpotDepth`** — `0`–`1`, where in the room the spot sits, front to
+  back. Only used by `effect:spot`.
 - **`artnetMaxBrightness`** — ceiling on how bright the room can be driven, so a
   white screensaver cannot dazzle. `1` removes the limit.
 - **`artnetReleaseScene`** — optional. When the screensaver stops, the relay stops
@@ -177,8 +182,38 @@ Operational notes:
 - **One colour per second, at most**, with a fade slightly longer than that
   interval so consecutive sends glide rather than step.
 - **The relay has no authentication**, so the URL is the entire capability. Treat
-  it accordingly, and note the app only ever POSTs colours and (optionally) a
-  scene name — never reads from the relay.
+  it accordingly. The app only ever writes — a colour, or an effect and its
+  parameters, plus optionally a scene name or `/stop` when the screensaver ends.
+  It never reads from the relay.
+
+#### Spot mode
+
+Setting `artnetTarget` to `effect:spot` swaps the flat colour for a movable
+circle of light that follows the bright part of the wall:
+
+```json
+{ "artnetTarget": "effect:spot", "artnetSpotDepth": 0.35 }
+```
+
+The effect is started once and then steered with small `/field/params` updates,
+because re-starting it each second would reset its own animation phase and read
+as a stutter. Size follows how concentrated the light is — a single bright
+filament gives a tight spot, a full-frame wash a broad one.
+
+**Only the horizontal axis comes from the picture.** The videowall is one edge
+of the room, so screen-x has a real spatial counterpart and screen-y does not;
+mapping the frame's vertical axis onto room depth would be an invention, and one
+that looks like a wiring fault rather than a design choice. Depth is
+`artnetSpotDepth` instead.
+
+Unlike a colour, an effect does not stop on its own — it would keep running
+after the wall woke up with nothing driving it. So an effect the app started is
+one it stops, via `/stop`, unless `artnetReleaseScene` is set (that scene both
+ends the effect and leaves the room somewhere deliberate).
+
+Any other field effect works as a target too — `effect:ripple`,
+`effect:plasma`, `effect:blobs`, `effect:aurora` — but only `spot` takes a
+position, so the others just get the colour.
 - **A dead relay is invisible.** Failures back off from 5 seconds to 5 minutes and
   never surface on the wall; the screensaver is unaffected.
 - The POST is made from the **main process**, not the renderer. The renderer's

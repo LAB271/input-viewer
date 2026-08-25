@@ -28,6 +28,20 @@
  *    below uses a saturation-weighted circular mean of hue instead, so a mostly
  *    dark frame with one strong accent sends the accent.
  *
+ * TWO MODES
+ *
+ * `artnetTarget` picks between them. A plain target ('all', 'group:x', 'strip:x')
+ * posts one flat colour, which is what #59 asked for. An 'effect:<name>' target
+ * instead runs one of the relay's field effects, and 'effect:spot' is the reason
+ * this exists: a circle of light that tracks the bright part of the wall along
+ * the room, sized by how concentrated that light is. The effect is started once
+ * and then nudged with small partial /field/params posts -- restarting it every
+ * second would reset its own animation phase and read as a stutter.
+ *
+ * Only the horizontal axis comes from the picture. The wall is one edge of the
+ * room, so screen-x has a real counterpart and screen-y does not; depth is a
+ * setting instead of an invention. See DEFAULT_SPOT_DEPTH.
+ *
  * RELEASE BEHAVIOUR
  *
  * When the screensaver stops, the relay simply stops being driven and the
@@ -36,6 +50,8 @@
  * `artnetReleaseScene` for anyone who wants it, unset by default so nothing is
  * sent and so this does not fight whatever normally owns the lights.
  */
+
+import { SAMPLE_GRID } from './gl-base.js'
 
 /**
  * How often a colour is sent, at most. The relay fades between values, so a
@@ -148,6 +164,118 @@ export function hueToRgb255(h) {
 }
 
 /**
+ * Spot diameter range, in field units (the relay's field is normalised 0..1).
+ * Driven by how concentrated the light on the wall is: a single bright filament
+ * gives a tight spot, a full-frame wash gives a broad one.
+ */
+export const SPOT_DIAMETER_MIN = 0.18
+export const SPOT_DIAMETER_MAX = 0.8
+
+/** Edge softness asked of the spot. Mid-range: a hard edge reads as a fault. */
+export const SPOT_SOFTNESS = 0.55
+
+/**
+ * Where in the room the spot sits, front to back. Configurable via `spotDepth`;
+ * the default is the middle of the floor.
+ *
+ * This is a CONSTANT rather than something driven from the frame, deliberately.
+ * The videowall is one edge of the room, so the frame's horizontal axis has a
+ * real spatial counterpart -- bright on the left of the wall is bright on the
+ * left of the room -- but the frame's vertical axis does not. Mapping screen-y
+ * to room depth would be an invention, and an invention that looks like a bug
+ * ("why does the spot walk backwards when the animation rises?"). So x tracks
+ * the picture, depth is a setting, and size carries the rest.
+ */
+export const DEFAULT_SPOT_DEPTH = 0.5
+
+/**
+ * Locate the light in a sampled frame.
+ *
+ * Returns the luminance-weighted centroid of the sample grid in **screen**
+ * coordinates -- (0,0) top-left, (1,1) bottom-right -- plus how spread out that
+ * light is horizontally.
+ *
+ * THE Y FLIP IS LOAD-BEARING. gl.readPixels has its origin at the bottom-left,
+ * so the grid's first tile row is the BOTTOM of the picture (see SAMPLE_GRID).
+ * Reporting those rows as-is would put the centroid upside-down; harmless for
+ * `cx`, but this function returns `cy` too and a caller has every right to trust
+ * it. Flipped here, once, rather than at each call site.
+ *
+ * @param {Uint8Array|Uint8ClampedArray} rgba packed RGBA from the sample grid
+ * @param {{tile: number, tilesX: number, tilesY: number}} [grid]
+ * @returns {{cx: number, cy: number, spread: number, weight: number}}
+ *   cx/cy in 0..1 screen space, spread 0..1, weight = mean luminance
+ */
+export function luminanceFocus(rgba, grid = SAMPLE_GRID) {
+  const { tile, tilesX, tilesY } = grid
+  const perTile = tile * tile * 4
+  let wx = 0, wy = 0, wsum = 0, wxx = 0
+
+  for (let ty = 0; ty < tilesY; ty++) {
+    for (let tx = 0; tx < tilesX; tx++) {
+      const base = (ty * tilesX + tx) * perTile
+      if (base + perTile > rgba.length) continue
+      let lum = 0
+      for (let i = base; i < base + perTile; i += 4) {
+        lum += 0.2126 * rgba[i] + 0.7152 * rgba[i + 1] + 0.0722 * rgba[i + 2]
+      }
+      // Mean luminance of the tile, 0..1, then squared so a bright accent pulls
+      // the centroid harder than a large dim area -- the same reasoning as the
+      // saturation weighting in dominantColour.
+      const mean = lum / (tile * tile) / 255
+      const w = mean * mean
+      if (w <= 0) continue
+
+      const fx = (tx + 0.5) / tilesX
+      const fy = 1 - (ty + 0.5) / tilesY   // GL rows are bottom-up; see above
+      wx += fx * w
+      wy += fy * w
+      wxx += fx * fx * w
+      wsum += w
+    }
+  }
+
+  if (wsum <= 1e-9) {
+    // Black frame: centre it and go wide rather than parking the spot in a
+    // corner because of float noise.
+    return { cx: 0.5, cy: 0.5, spread: 1, weight: 0 }
+  }
+
+  const cx = wx / wsum
+  const variance = Math.max(0, wxx / wsum - cx * cx)
+  // A uniform frame has variance 1/12 (~0.083); normalise against that so a
+  // full-frame wash reads as spread 1 and a point source as 0.
+  const spread = Math.min(1, Math.sqrt(variance) / Math.sqrt(1 / 12))
+  return { cx, cy: wy / wsum, spread, weight: Math.sqrt(wsum) }
+}
+
+/** Trim float-division noise from a 0..1 field value. */
+const round4 = (v) => Math.round(v * 10000) / 10000
+
+/** Map horizontal spread onto a spot diameter. */
+export function spotDiameter(spread) {
+  const t = Math.max(0, Math.min(1, spread))
+  return SPOT_DIAMETER_MIN + (SPOT_DIAMETER_MAX - SPOT_DIAMETER_MIN) * t
+}
+
+/**
+ * The effect name in a target, or null if the target is a plain colour target.
+ *
+ * `effect:<name>` selects the relay's field-based effects (spot, ripple, plasma,
+ * blobs, tunnel, sweep, aurora) instead of posting a flat colour. Only `spot`
+ * takes a position, so only `spot` gets steered; the others still get colour.
+ *
+ * @param {string} target
+ * @returns {string|null}
+ */
+export function effectNameFor(target) {
+  const t = String(target || '').trim()
+  if (!t.startsWith('effect:')) return null
+  const name = t.slice('effect:'.length).trim()
+  return name || null
+}
+
+/**
  * Build the relay URL for a colour post from the configured target.
  *
  * The relay exposes `/all`, `/groups/{name}` and `/strips/{name}`, all taking the
@@ -169,6 +297,22 @@ export function colourEndpoint(baseUrl, target) {
   // Unrecognised target: fall back to /all rather than posting to a made-up
   // path, which would 404 every second and look like the relay was broken.
   return `${base}/all`
+}
+
+/** `POST /effects/{name}` -- starts an effect, body is a flat EffectRequest. */
+export function effectEndpoint(baseUrl, name) {
+  const base = String(baseUrl || '').replace(/\/+$/, '')
+  return `${base}/effects/${encodeURIComponent(name)}`
+}
+
+/** `POST /field/params` -- partial update of the running field effect. */
+export function fieldParamsEndpoint(baseUrl) {
+  return `${String(baseUrl || '').replace(/\/+$/, '')}/field/params`
+}
+
+/** `POST /stop` -- ends whatever effect is running, leaving the last frame lit. */
+export function stopEndpoint(baseUrl) {
+  return `${String(baseUrl || '').replace(/\/+$/, '')}/stop`
 }
 
 /**
@@ -248,6 +392,10 @@ export function createArtnetSync(options) {
   let lastError = null
   let sent = 0
   let lastColour = null
+  let lastSpot = null
+  // Whether the effect is believed to be running on the relay. While false the
+  // next send starts it; after that, sends are cheap partial nudges.
+  let effectRunning = false
 
   function backoffUntil() {
     if (failures === 0) return 0
@@ -264,7 +412,10 @@ export function createArtnetSync(options) {
       releaseScene: c.releaseScene || '',
       // Ceiling on how bright the room can be driven, so a white screensaver
       // cannot dazzle. 1 = no limit.
-      maxBrightness: typeof c.maxBrightness === 'number' ? c.maxBrightness : 1
+      maxBrightness: typeof c.maxBrightness === 'number' ? c.maxBrightness : 1,
+      spotDepth: typeof c.spotDepth === 'number'
+        ? Math.max(0, Math.min(1, c.spotDepth))
+        : DEFAULT_SPOT_DEPTH
     }
   }
 
@@ -311,6 +462,41 @@ export function createArtnetSync(options) {
       lastSentAt = t
       inFlight = true
       sent++
+
+      const effect = effectNameFor(cfg.target)
+      if (effect) {
+        const focus = luminanceFocus(rgba)
+        // Brightness is PRE-MULTIPLIED into rgb rather than sent as its own
+        // field: the field effects take r/g/b/cx/cy/diameter/softness and have
+        // no brightness parameter, so a `brightness` key would be silently
+        // dropped and maxBrightness would quietly stop working.
+        const spot = {
+          r: Math.round(col.r * brightness),
+          g: Math.round(col.g * brightness),
+          b: Math.round(col.b * brightness),
+          // Rounded because the centroid is a float division and lands on
+          // things like 0.5000000000000001, which is three times the JSON for
+          // no extra precision the fixtures could possibly render.
+          cx: round4(focus.cx),
+          cy: round4(cfg.spotDepth),
+          diameter: round4(spotDiameter(focus.spread)),
+          softness: SPOT_SOFTNESS
+        }
+        lastSpot = { effect, ...spot }
+
+        // First send starts the effect (a full EffectRequest); every send after
+        // that is a partial /field/params update, which is one small POST rather
+        // than a restart -- restarting each second would reset the effect's own
+        // animation phase and make it stutter.
+        const starting = !effectRunning
+        const url = starting ? effectEndpoint(cfg.url, effect) : fieldParamsEndpoint(cfg.url)
+        const body = starting ? spot : { params: spot }
+        post(url, body)
+          .then((ok) => { effectRunning = ok })
+          .finally(() => { inFlight = false })
+        return
+      }
+
       post(colourEndpoint(cfg.url, cfg.target), {
         r: col.r, g: col.g, b: col.b,
         brightness,
@@ -321,17 +507,30 @@ export function createArtnetSync(options) {
     /**
      * Stop driving the lights.
      *
-     * By default this sends nothing: the fixtures keep their last colour, so a
-     * room with people in it does not suddenly go dark and whatever normally
-     * owns the lighting takes over on its next command. A scene is posted only
-     * if one is configured.
+     * In colour mode this sends nothing by default: the fixtures keep their last
+     * colour, so a room with people in it does not suddenly go dark and whatever
+     * normally owns the lighting takes over on its next command. A scene is
+     * posted only if one is configured.
+     *
+     * EFFECT MODE IS DIFFERENT, and it is why this is not simply the same path.
+     * A colour that is left alone is static. An *effect* that is left alone keeps
+     * running: the room would go on pulsing and sweeping indefinitely after the
+     * wall woke up, with nothing driving it and no obvious way for anyone in the
+     * room to work out why. So an effect we started is one we stop. A configured
+     * release scene still wins, since that both ends the effect and leaves the
+     * room somewhere deliberate.
      */
     release() {
       const cfg = config()
-      if (!cfg.enabled || !cfg.url || !cfg.releaseScene) return
-      const scene = encodeURIComponent(cfg.releaseScene)
-      const base = cfg.url.replace(/\/+$/, '')
-      post(`${base}/scenes/${scene}`, {})
+      const wasRunning = effectRunning
+      effectRunning = false
+      if (!cfg.enabled || !cfg.url) return
+      if (cfg.releaseScene) {
+        const scene = encodeURIComponent(cfg.releaseScene)
+        post(`${cfg.url.replace(/\/+$/, '')}/scenes/${scene}`, {})
+        return
+      }
+      if (wasRunning) post(stopEndpoint(cfg.url), {})
     },
 
     /** Diagnostics for the settings UI and the tests. */
@@ -341,6 +540,8 @@ export function createArtnetSync(options) {
         failures,
         lastError,
         lastColour,
+        lastSpot,
+        effectRunning,
         nextEligibleAt: Math.max(lastSentAt + SEND_INTERVAL_MS, backoffUntil())
       }
     }
