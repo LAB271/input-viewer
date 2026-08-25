@@ -169,6 +169,12 @@ and physically changes the lighting. To enable it:
   colour — see **Spot mode** below.
 - **`artnetSpotDepth`** — `0`–`1`, where in the room the spot sits, front to
   back. Only used by `effect:spot`.
+
+These are all editable in **Settings → Art-Net Lighting**, which is the easier
+route: the app rewrites `settings.json` whenever any setting changes, so a
+hand-edit made while the app is running will be overwritten. `group:` and
+`strip:` targets are site-specific and have no entry in the dropdown — set those
+in the file, and the panel will preserve them rather than coercing the value.
 - **`artnetMaxBrightness`** — ceiling on how bright the room can be driven, so a
   white screensaver cannot dazzle. `1` removes the limit.
 - **`artnetReleaseScene`** — optional. When the screensaver stops, the relay stops

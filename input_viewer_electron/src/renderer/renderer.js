@@ -219,6 +219,16 @@ const elements = {
   remoteKeyboardApiKey: document.getElementById('remote-keyboard-api-key'),
   // Presenter tool debug overlay
   presenterDebugToggle: document.getElementById('presenter-debug-toggle'),
+  artnetToggle: document.getElementById('artnet-toggle'),
+  artnetFields: document.getElementById('artnet-fields'),
+  artnetUrl: document.getElementById('artnet-url'),
+  artnetTarget: document.getElementById('artnet-target'),
+  artnetMaxBrightness: document.getElementById('artnet-max-brightness'),
+  artnetMaxBrightnessValue: document.getElementById('artnet-max-brightness-value'),
+  artnetSpotDepthRow: document.getElementById('artnet-spot-depth-row'),
+  artnetSpotDepth: document.getElementById('artnet-spot-depth'),
+  artnetSpotDepthValue: document.getElementById('artnet-spot-depth-value'),
+  artnetReleaseScene: document.getElementById('artnet-release-scene'),
   presenterDebugOverlay: document.getElementById('presenter-debug-overlay'),
   presenterDebugLog: document.getElementById('presenter-debug-log')
 }
@@ -287,7 +297,8 @@ async function saveSettings() {
         artnetUrl: state.settings.artnetUrl,
         artnetTarget: state.settings.artnetTarget,
         artnetReleaseScene: state.settings.artnetReleaseScene,
-        artnetMaxBrightness: state.settings.artnetMaxBrightness
+        artnetMaxBrightness: state.settings.artnetMaxBrightness,
+        artnetSpotDepth: state.settings.artnetSpotDepth
       }
       await window.electronAPI.saveSettings(settingsToSave)
     }
@@ -2539,6 +2550,91 @@ function setRemoteKeyboardApiKey(apiKey) {
 }
 
 /**
+ * Art-Net settings panel (#59, spot mode in 3.0.0).
+ *
+ * These read and write `state.settings` directly rather than mirroring into
+ * `state.*` like the remote-keyboard fields do, because the Art-Net client
+ * re-reads its config through `getConfig()` on every send. There is nothing to
+ * mirror: a change here takes effect on the next frame sample without a restart.
+ */
+function updateArtnetUI() {
+  const enabled = Boolean(state.settings.artnetEnabled)
+  elements.artnetToggle.classList.toggle('active', enabled)
+  elements.artnetFields.classList.toggle('hidden', !enabled)
+
+  elements.artnetUrl.value = state.settings.artnetUrl || ''
+  elements.artnetReleaseScene.value = state.settings.artnetReleaseScene || ''
+
+  // A group:/strip: target set by hand is site-specific and has no option here.
+  // Add it rather than letting the select coerce the value to its first option,
+  // which would silently repoint someone's lighting the moment they opened this
+  // panel to change something unrelated.
+  const target = state.settings.artnetTarget || 'all'
+  const known = [...elements.artnetTarget.options].some(o => o.value === target)
+  if (!known) {
+    const opt = document.createElement('option')
+    opt.value = target
+    opt.textContent = `${target} (set in settings.json)`
+    elements.artnetTarget.appendChild(opt)
+  }
+  elements.artnetTarget.value = target
+
+  const maxBrightness = typeof state.settings.artnetMaxBrightness === 'number'
+    ? state.settings.artnetMaxBrightness
+    : 0.8
+  elements.artnetMaxBrightness.value = String(Math.round(maxBrightness * 100))
+  elements.artnetMaxBrightnessValue.textContent = `${Math.round(maxBrightness * 100)}%`
+
+  const spotDepth = typeof state.settings.artnetSpotDepth === 'number'
+    ? state.settings.artnetSpotDepth
+    : 0.5
+  elements.artnetSpotDepth.value = String(Math.round(spotDepth * 100))
+  elements.artnetSpotDepthValue.textContent = `${Math.round(spotDepth * 100)}%`
+  // Depth only means anything for the spot; every other target ignores it.
+  elements.artnetSpotDepthRow.classList.toggle('hidden', target !== 'effect:spot')
+}
+
+function toggleArtnet() {
+  state.settings.artnetEnabled = !state.settings.artnetEnabled
+  updateArtnetUI()
+  // saveSettings() re-runs syncArtnetFrameObserver() itself -- it is documented
+  // as the single place that catches an Art-Net toggle whichever control did it,
+  // so calling it again here would just be duplication.
+  saveSettings()
+}
+
+function setArtnetUrl(url) {
+  state.settings.artnetUrl = url.trim()
+  debouncedSaveSettings()
+}
+
+function setArtnetTarget(target) {
+  state.settings.artnetTarget = target
+  // A target change switches between the flat-colour and effect paths. Release
+  // the current one first, or an effect we started keeps running unattended.
+  getArtnetSync()?.release()
+  updateArtnetUI()
+  saveSettings()
+}
+
+function setArtnetMaxBrightness(percent) {
+  state.settings.artnetMaxBrightness = percent / 100
+  elements.artnetMaxBrightnessValue.textContent = `${percent}%`
+  debouncedSaveSettings()
+}
+
+function setArtnetSpotDepth(percent) {
+  state.settings.artnetSpotDepth = percent / 100
+  elements.artnetSpotDepthValue.textContent = `${percent}%`
+  debouncedSaveSettings()
+}
+
+function setArtnetReleaseScene(scene) {
+  state.settings.artnetReleaseScene = scene.trim()
+  debouncedSaveSettings()
+}
+
+/**
  * Update the presenter debug overlay visibility to reflect current state
  */
 function updatePresenterDebugUI() {
@@ -2982,6 +3078,36 @@ function setupEventListeners() {
 
   // Presenter tool debug overlay toggle
   elements.presenterDebugToggle.addEventListener('click', togglePresenterDebug)
+
+  // Art-Net lighting settings
+  elements.artnetToggle.addEventListener('click', toggleArtnet)
+
+  elements.artnetUrl.addEventListener('input', (e) => {
+    setArtnetUrl(e.target.value)
+  })
+
+  elements.artnetTarget.addEventListener('change', (e) => {
+    setArtnetTarget(e.target.value)
+  })
+
+  elements.artnetMaxBrightness.addEventListener('input', (e) => {
+    setArtnetMaxBrightness(parseInt(e.target.value))
+  })
+
+  elements.artnetSpotDepth.addEventListener('input', (e) => {
+    setArtnetSpotDepth(parseInt(e.target.value))
+  })
+
+  elements.artnetReleaseScene.addEventListener('input', (e) => {
+    setArtnetReleaseScene(e.target.value)
+  })
+
+  // A URL or scene name contains letters that are themselves shortcuts -- D and
+  // S switch layout, Q quits. Without this, typing a hostname reconfigures the
+  // app underneath you.
+  for (const field of [elements.artnetUrl, elements.artnetReleaseScene]) {
+    field.addEventListener('keydown', (e) => { e.stopPropagation() })
+  }
 
   // System volume slider in dropdown
   elements.dropdownSystemVolume.addEventListener('input', async (e) => {
@@ -3707,6 +3833,7 @@ async function init() {
 
   // Initialize remote keyboard settings
   state.remoteKeyboardEnabled = state.settings.remoteKeyboardEnabled ?? false
+  updateArtnetUI()
   state.remoteKeyboardHost = state.settings.remoteKeyboardHost ?? ''
   state.remoteKeyboardApiKey = state.settings.remoteKeyboardApiKey ?? ''
 
@@ -3895,5 +4022,14 @@ export {
   dismissScreensaver,
   hideDvdScreensaver,
   SAVER_FADE_OUT_MS,
-  SAVER_FADE_IN_MS
+  SAVER_FADE_IN_MS,
+  // Exported so the Art-Net panel is testable, and specifically so the save
+  // allowlist is. That object silently drops any key missing from it, which is
+  // how artnetSpotDepth shipped in 3.0.0 unable to persist: the setting existed,
+  // loaded and worked, and was reset to its default by the next unrelated save.
+  saveSettings,
+  updateArtnetUI,
+  toggleArtnet,
+  setArtnetTarget,
+  setArtnetSpotDepth
 }

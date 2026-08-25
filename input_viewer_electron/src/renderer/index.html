@@ -227,6 +227,55 @@
         </div>
       </div>
 
+      <!-- Art-Net Lighting Section -->
+      <div class="settings-section">
+        <h3>Art-Net Lighting</h3>
+        <p class="settings-description">Drive the room lighting from the active
+          screensaver. Nothing is sent until this is enabled <em>and</em> a URL is
+          given &mdash; there is no default relay.</p>
+        <div class="toggle-row">
+          <label for="artnet-toggle">Enable Art-Net</label>
+          <div id="artnet-toggle" class="toggle-switch"></div>
+        </div>
+        <div id="artnet-fields" class="artnet-fields hidden">
+          <div class="input-row">
+            <label for="artnet-url">Relay URL</label>
+            <input type="text" id="artnet-url" placeholder="https://spacelights.lab271.io">
+          </div>
+          <div class="input-row">
+            <label for="artnet-target">Target</label>
+            <!-- A select rather than free text on purpose: an unrecognised
+                 target silently falls back to /all (see colourEndpoint), so a
+                 typo would look like broken fixtures rather than a bad setting.
+                 group:/strip: targets are site-specific and stay file-only; an
+                 existing one is preserved as an extra option rather than being
+                 overwritten when this panel opens. -->
+            <select id="artnet-target">
+              <option value="all">All fixtures &mdash; one flat colour</option>
+              <option value="effect:spot">Spot &mdash; follows the bright part of the wall</option>
+              <option value="effect:ripple">Ripple</option>
+              <option value="effect:plasma">Plasma</option>
+              <option value="effect:blobs">Blobs</option>
+              <option value="effect:aurora">Aurora</option>
+            </select>
+          </div>
+          <div class="slider-row">
+            <label>Max Brightness</label>
+            <input type="range" id="artnet-max-brightness" min="0" max="100" value="80">
+            <span id="artnet-max-brightness-value" class="value">80%</span>
+          </div>
+          <div class="slider-row" id="artnet-spot-depth-row">
+            <label>Spot Depth</label>
+            <input type="range" id="artnet-spot-depth" min="0" max="100" value="50">
+            <span id="artnet-spot-depth-value" class="value">50%</span>
+          </div>
+          <div class="input-row">
+            <label for="artnet-release-scene">Release Scene (optional)</label>
+            <input type="text" id="artnet-release-scene" placeholder="Leave empty to keep the last colour">
+          </div>
+        </div>
+      </div>
+
       <!-- Shortcuts Section -->
       <div class="settings-section">
         <h3>Keyboard Shortcuts</h3>

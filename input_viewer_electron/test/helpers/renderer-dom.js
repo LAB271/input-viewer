@@ -19,6 +19,7 @@ import path from 'node:path'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const RENDERER_PATH = path.resolve(here, '../../src/renderer/renderer.js')
+const INDEX_HTML_PATH = path.resolve(here, '../../src/renderer/index.html')
 
 /**
  * Absolute path to input_viewer_electron/. Exported because under the jsdom
@@ -70,6 +71,26 @@ function stubCanvas2D() {
 }
 
 /**
+ * Lift a `<select>` verbatim out of index.html.
+ *
+ * Synthesising one here would make any test of its options vacuous: it would be
+ * asserting against the fixture's own list rather than the app's. The Art-Net
+ * target select is the case that matters -- its options are the difference
+ * between steering the spot and repointing every fixture in the room.
+ *
+ * @param {string} id
+ * @returns {string|null} outer markup, or null if index.html has no such select
+ */
+function liftSelect(id) {
+  const html = readFileSync(INDEX_HTML_PATH, 'utf8')
+  const open = html.indexOf(`<select id="${id}"`)
+  if (open === -1) return null
+  const close = html.indexOf('</select>', open)
+  if (close === -1) return null
+  return html.slice(open, close + '</select>'.length)
+}
+
+/**
  * Populate document.body with everything renderer.js needs, then flag the
  * module not to autostart. Call before importing renderer.js.
  */
@@ -85,6 +106,16 @@ export function installRendererDom() {
     }
     if (id.endsWith('-host') || id.endsWith('-api-key')) {
       return `<input type="text" id="${id}">`
+    }
+    // Real controls are taken from index.html where the markup carries meaning
+    // the id cannot: a select's options, above all.
+    const select = liftSelect(id)
+    if (select) return select
+    if (id === 'artnet-url' || id === 'artnet-release-scene') {
+      return `<input type="text" id="${id}">`
+    }
+    if (id === 'artnet-max-brightness' || id === 'artnet-spot-depth') {
+      return `<input type="range" id="${id}" min="0" max="100" value="50">`
     }
     return `<div id="${id}"></div>`
   })

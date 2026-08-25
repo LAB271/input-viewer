@@ -1732,14 +1732,16 @@ kbd {
   color: var(--text-color);
 }
 
-.remote-keyboard-fields {
+.remote-keyboard-fields,
+.artnet-fields {
   margin-top: 16px;
   padding: 16px;
   background: rgba(0, 0, 0, 0.15);
   border-radius: 8px;
 }
 
-.remote-keyboard-fields.hidden {
+.remote-keyboard-fields.hidden,
+.artnet-fields.hidden {
   display: none;
 }
 
@@ -1761,7 +1763,8 @@ kbd {
 }
 
 .input-row input[type="text"],
-.input-row input[type="password"] {
+.input-row input[type="password"],
+.input-row select {
   padding: 10px 12px;
   background: rgba(0, 0, 0, 0.25);
   border: 1px solid rgba(255, 255, 255, 0.14);
@@ -1773,7 +1776,8 @@ kbd {
 }
 
 .input-row input[type="text"]:focus,
-.input-row input[type="password"]:focus {
+.input-row input[type="password"]:focus,
+.input-row select:focus {
   border-color: var(--accent-color);
   box-shadow: 0 0 0 3px rgba(130, 180, 255, 0.2);
 }
