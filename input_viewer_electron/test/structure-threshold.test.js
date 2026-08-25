@@ -303,14 +303,26 @@ describe('baseline staleness (#227)', () => {
     expect(staleBaseline(0, 0.5)).toBe(false)
   })
 
-  it('leaves only one saver below the absolute margin', () => {
-    // The point of fixing the stale baselines. Starfield Warp was never a dim
-    // saver -- it measures 0.1423 -- so correcting its baseline moves it into full
-    // protection and shrinks the known blind spot to Plasma alone.
+  it('keeps the blind spot to savers that genuinely have no edges', () => {
+    // Was ['Plasma'] alone. Re-measuring the whole set for #209 moved two more in,
+    // and neither is a regression to fix:
+    //
+    //   Wave Tank      measured exactly 0 before and 0.0007 now. Both readings mean
+    //                  "no edges"; it simply landed either side of zero on two runs,
+    //                  and 0 took the separate zero-baseline branch while 0.0007
+    //                  does not.
+    //   Julia Family   low by construction (#209): the exterior fades to black, so
+    //                  the frame is flat dark interior against flat dark surround
+    //                  with edges only along the boundary filigree.
+    //
+    // What protects all three is the uniform-spread rule from #227, which exists for
+    // exactly this blind spot. Adding a name here is only acceptable while that
+    // holds -- a saver that is dim AND uniform would slip through both.
     const subMargin = Object.entries(STRUCTURE_BASELINES)
       .filter(([, b]) => b > 0 && b <= MIN_ABS_DROP)
       .map(([n]) => n)
-    expect(subMargin).toEqual(['Plasma'])
+      .sort()
+    expect(subMargin).toEqual(['Julia Family', 'Plasma', 'Wave Tank'])
   })
 })
 

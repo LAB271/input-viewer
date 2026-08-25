@@ -246,7 +246,7 @@ describe('pickRandomIndex', () => {
 
 const SHADER_SAVERS = [
   'plasma.js', 'flow-field.js', 'raymarch.js',
-  'mandelbrot.js', 'julia.js', 'burning-ship.js'
+  'julia-family.js', 'burning-ship.js'
 ]
 
 const readSaver = (f) => readFileSync(join(SAVER_DIR, f), 'utf8')
