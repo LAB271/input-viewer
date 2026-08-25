@@ -118,7 +118,11 @@ const defaultSettings = {
   artnetTarget: 'all',
   artnetReleaseScene: '',
   artnetMaxBrightness: 0.8,
-  artnetSpotDepth: 0.5
+  artnetSpotDepth: 0.5,
+  // artnetSceneBySaver: { '<Saver Display Name>': 'reactive'|'off'|'scene:x'|'effect:x' }
+  //   Per-screensaver lighting. Absent or 'reactive' keeps the default
+  //   drive-from-the-picture behaviour, so an empty map changes nothing.
+  artnetSceneBySaver: {}
 }
 
 // Load settings from file
@@ -365,7 +369,13 @@ ipcMain.handle('diag-log-reset', () => {
 const ARTNET_TIMEOUT_MS = 2000
 
 ipcMain.handle('artnet-send', async (event, request) => {
-  const { url, body } = request || {}
+  const { url, body, method } = request || {}
+  // GET is allowed so the renderer can read the room's state before taking it
+  // over, and put it back afterwards. It is the only read this app makes of the
+  // relay; everything else here writes. Anything that is not an explicit GET is
+  // treated as a POST, so an unset or unexpected method cannot turn a write into
+  // a silent no-op.
+  const verb = method === 'GET' ? 'GET' : 'POST'
   // Only http/https to a real host. A bad settings value should fail here rather
   // than reach fetch(): file:// or a data: URL is never a lighting relay.
   let parsed
@@ -379,13 +389,25 @@ ipcMain.handle('artnet-send', async (event, request) => {
   }
 
   try {
-    const res = await fetch(parsed.toString(), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body ?? {}),
-      signal: AbortSignal.timeout(ARTNET_TIMEOUT_MS)
-    })
+    const res = await fetch(parsed.toString(), verb === 'GET'
+      ? { method: 'GET', signal: AbortSignal.timeout(ARTNET_TIMEOUT_MS) }
+      : {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body ?? {}),
+          signal: AbortSignal.timeout(ARTNET_TIMEOUT_MS)
+        })
     if (!res.ok) return { ok: false, error: `HTTP ${res.status}` }
+    if (verb === 'GET') {
+      // A snapshot is only useful if it parsed. A relay that answers 200 with
+      // something that is not JSON must read as a failure, not as an empty
+      // snapshot -- restoring from an empty snapshot would leave the room lit.
+      try {
+        return { ok: true, data: await res.json() }
+      } catch (err) {
+        return { ok: false, error: `unparseable response: ${err.message}` }
+      }
+    }
     return { ok: true }
   } catch (err) {
     // Never throws back across IPC: a dead relay must not surface as a rejected

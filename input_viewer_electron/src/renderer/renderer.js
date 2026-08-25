@@ -41,7 +41,8 @@ import {
   stopScreensaver,
   isScreensaverRunning,
   getActiveIndex,
-  screensaverCount
+  screensaverCount,
+  listScreensavers
 } from './screensavers/registry.js'
 import { installWeatherSource } from './screensavers/weather-source.js'
 import { installArtnetSync, getArtnetSync } from './screensavers/artnet-sync.js'
@@ -229,6 +230,7 @@ const elements = {
   artnetSpotDepth: document.getElementById('artnet-spot-depth'),
   artnetSpotDepthValue: document.getElementById('artnet-spot-depth-value'),
   artnetReleaseScene: document.getElementById('artnet-release-scene'),
+  artnetSaverList: document.getElementById('artnet-saver-list'),
   presenterDebugOverlay: document.getElementById('presenter-debug-overlay'),
   presenterDebugLog: document.getElementById('presenter-debug-log')
 }
@@ -298,7 +300,8 @@ async function saveSettings() {
         artnetTarget: state.settings.artnetTarget,
         artnetReleaseScene: state.settings.artnetReleaseScene,
         artnetMaxBrightness: state.settings.artnetMaxBrightness,
-        artnetSpotDepth: state.settings.artnetSpotDepth
+        artnetSpotDepth: state.settings.artnetSpotDepth,
+        artnetSceneBySaver: state.settings.artnetSceneBySaver
       }
       await window.electronAPI.saveSettings(settingsToSave)
     }
@@ -345,7 +348,8 @@ function getDefaultSettings() {
     artnetTarget: 'all',
     artnetReleaseScene: '',
     artnetMaxBrightness: 0.8,
-    artnetSpotDepth: 0.5
+    artnetSpotDepth: 0.5,
+    artnetSceneBySaver: {}
   }
 }
 
@@ -1283,6 +1287,34 @@ function clearSaverFade () {
  *
  * @param {() => string} start starts a saver and returns its name
  */
+/**
+ * Tell the Art-Net client which saver is now on screen.
+ *
+ * Hooked into revealScreensaver/swapScreensaver rather than into their four call
+ * sites, so a future way of starting a saver cannot forget to report it and
+ * leave the room lit for the wrong one.
+ *
+ * The activate/rotate split is not cosmetic. `activate` snapshots the room's
+ * existing state so it can be put back; `rotate` deliberately does not, because
+ * by then the room is showing OUR lighting and re-snapshotting would lose the
+ * only record of what was there before.
+ *
+ * @param {string} name display name of the saver now running
+ * @param {'activate'|'rotate'} phase
+ */
+function notifyArtnetSaver (name, phase) {
+  if (!name) return
+  const artnet = getArtnetSync()
+  if (!artnet) return
+  // Fire and forget: this reaches the network, and neither starting a saver nor
+  // rotating one may wait on a lighting relay. A rejection here must never
+  // surface in the screensaver path.
+  const p = phase === 'activate' ? artnet.activate(name) : artnet.rotate(name)
+  Promise.resolve(p).catch(err => {
+    console.warn(`[Art-Net] ${phase} failed: ${err && err.message ? err.message : err}`)
+  })
+}
+
 function revealScreensaver (start) {
   clearSaverFade()
   saverDismissing = false
@@ -1291,7 +1323,9 @@ function revealScreensaver (start) {
 
   if (saverFadeMs(SAVER_FADE_IN_MS) === 0) {
     overlay.classList.remove('fading', 'hidden')
-    return start()
+    const immediate = start()
+    notifyArtnetSaver(immediate, 'activate')
+    return immediate
   }
 
   // Order matters. `.fading` before `.hidden` is removed, so the overlay is
@@ -1307,6 +1341,7 @@ function revealScreensaver (start) {
 
   const name = start()
   overlay.classList.remove('fading')
+  notifyArtnetSaver(name, 'activate')
   return name
 }
 
@@ -1325,14 +1360,14 @@ function swapScreensaver (swap) {
 
   if (saverFadeMs(SAVER_FADE_OUT_MS) === 0) {
     canvas.classList.remove('saver-swapping')
-    swap()
+    notifyArtnetSaver(swap(), 'rotate')
     return
   }
 
   canvas.classList.add('saver-swapping')
   saverFadeTimer = setTimeout(() => {
     saverFadeTimer = null
-    swap()
+    notifyArtnetSaver(swap(), 'rotate')
     // Removing the class animates back up over SAVER_FADE_IN_MS, from the base
     // rule rather than this one.
     canvas.classList.remove('saver-swapping')
@@ -2557,6 +2592,94 @@ function setRemoteKeyboardApiKey(apiKey) {
  * re-reads its config through `getConfig()` on every send. There is nothing to
  * mirror: a change here takes effect on the next frame sample without a restart.
  */
+/**
+ * Scene and effect names offered in the per-saver dropdowns.
+ *
+ * Scene names are site-specific -- the relay's own `warm_wit`, `lab_modus` and
+ * so on -- so they cannot be hardcoded. They are read from the relay when it is
+ * reachable and cached in memory for the session; with no relay the dropdowns
+ * still render, offering Reactive and Off plus whatever was already configured,
+ * so a saved mapping is never silently dropped for want of a network.
+ */
+let artnetCatalogue = { scenes: [], effects: [] }
+
+async function refreshArtnetCatalogue() {
+  const url = state.settings.artnetUrl
+  if (!state.settings.artnetEnabled || !url) return
+  const status = await getArtnetSync()?.readCatalogue?.()
+  if (!status) return
+  artnetCatalogue = status
+  renderArtnetSaverList()
+}
+
+/**
+ * One row per screensaver, each with the lighting it should drive.
+ *
+ * Rendered from listScreensavers() rather than a hand-written list, so a new
+ * screensaver appears here automatically -- the drift that bit the shortcuts
+ * table in #258 was exactly this shape of hand-maintained duplicate.
+ */
+function renderArtnetSaverList() {
+  const list = elements.artnetSaverList
+  if (!list) return
+  list.innerHTML = ''
+  const mapping = state.settings.artnetSceneBySaver || {}
+
+  // Anything already configured but no longer offered by the relay still needs a
+  // home, or opening this panel would silently rewrite it to Reactive.
+  const configured = [...new Set(Object.values(mapping))]
+    .filter(v => typeof v === 'string' && (v.startsWith('scene:') || v.startsWith('effect:')))
+
+  for (const saver of listScreensavers()) {
+    const row = document.createElement('div')
+    row.className = 'artnet-saver-row'
+
+    const name = document.createElement('span')
+    name.className = 'artnet-saver-name'
+    name.textContent = saver
+    row.appendChild(name)
+
+    const select = document.createElement('select')
+    const options = [
+      ['reactive', 'Reactive'],
+      ['off', 'Leave lights alone'],
+      ...artnetCatalogue.scenes.map(n => [`scene:${n}`, `Scene: ${n}`]),
+      ...artnetCatalogue.effects.map(n => [`effect:${n}`, `Effect: ${n}`])
+    ]
+    const current = mapping[saver] || 'reactive'
+    if (!options.some(([v]) => v === current)) options.push([current, `${current} (configured)`])
+    for (const extra of configured) {
+      if (!options.some(([v]) => v === extra)) options.push([extra, `${extra} (configured)`])
+    }
+    for (const [value, label] of options) {
+      const opt = document.createElement('option')
+      opt.value = value
+      opt.textContent = label
+      select.appendChild(opt)
+    }
+    select.value = current
+    select.addEventListener('change', (e) => setArtnetSaverMode(saver, e.target.value))
+    row.appendChild(select)
+
+    list.appendChild(row)
+  }
+}
+
+/**
+ * Set one screensaver's lighting mode.
+ *
+ * 'reactive' is stored as an absent key rather than as the string, so a mapping
+ * only ever contains real decisions. An entry per screensaver would otherwise
+ * accumulate in settings.json for every dropdown anyone ever touched.
+ */
+function setArtnetSaverMode(saver, mode) {
+  const mapping = { ...(state.settings.artnetSceneBySaver || {}) }
+  if (mode === 'reactive') delete mapping[saver]
+  else mapping[saver] = mode
+  state.settings.artnetSceneBySaver = mapping
+  saveSettings()
+}
+
 function updateArtnetUI() {
   const enabled = Boolean(state.settings.artnetEnabled)
   elements.artnetToggle.classList.toggle('active', enabled)
@@ -2592,11 +2715,17 @@ function updateArtnetUI() {
   elements.artnetSpotDepthValue.textContent = `${Math.round(spotDepth * 100)}%`
   // Depth only means anything for the spot; every other target ignores it.
   elements.artnetSpotDepthRow.classList.toggle('hidden', target !== 'effect:spot')
+
+  renderArtnetSaverList()
 }
 
 function toggleArtnet() {
   state.settings.artnetEnabled = !state.settings.artnetEnabled
   updateArtnetUI()
+  // Enabling it is the first moment the relay is worth asking for its scene
+  // names. Deliberately not awaited: the panel is already rendered from the
+  // cache, and the dropdowns fill in when the answer arrives.
+  refreshArtnetCatalogue()
   // saveSettings() re-runs syncArtnetFrameObserver() itself -- it is documented
   // as the single place that catches an Art-Net toggle whichever control did it,
   // so calling it again here would just be duplication.
@@ -2606,6 +2735,7 @@ function toggleArtnet() {
 function setArtnetUrl(url) {
   state.settings.artnetUrl = url.trim()
   debouncedSaveSettings()
+  refreshArtnetCatalogue()
 }
 
 function setArtnetTarget(target) {
@@ -3915,7 +4045,8 @@ async function init() {
       target: state.settings.artnetTarget,
       releaseScene: state.settings.artnetReleaseScene,
       maxBrightness: state.settings.artnetMaxBrightness,
-      spotDepth: state.settings.artnetSpotDepth
+      spotDepth: state.settings.artnetSpotDepth,
+      sceneBySaver: state.settings.artnetSceneBySaver
     })
   })
   syncArtnetFrameObserver()

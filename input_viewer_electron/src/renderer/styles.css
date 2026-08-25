@@ -1788,6 +1788,45 @@ kbd {
   opacity: 0.6;
 }
 
+.artnet-saver-list {
+  max-height: 260px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-right: 4px;
+}
+
+.artnet-saver-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.artnet-saver-row .artnet-saver-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.artnet-saver-row select {
+  flex: 0 0 190px;
+  padding: 6px 8px;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 6px;
+  color: var(--text-color);
+  font-size: 12px;
+  outline: none;
+}
+
+.artnet-saver-row select:focus {
+  border-color: var(--accent-color);
+}
+
 /* =============================================================================
    Update Notification
    ============================================================================= */
