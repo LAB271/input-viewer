@@ -1727,6 +1727,10 @@ function accumulateFrameStats (samples, stats = fpsStats) {
         seconds: s.seconds,
         preMs: s.preMs ?? 0,
         drawMs: s.drawMs ?? 0,
+        worstMs: s.worstMs ?? 0,
+        lateCount: s.lateCount ?? 0,
+        latePeriodSum: (s.latePeriodMs ?? 0) > 0 ? s.latePeriodMs : 0,
+        latePeriodN: (s.latePeriodMs ?? 0) > 0 ? 1 : 0,
         min: fps,
         max: fps,
         last: fps,
@@ -1739,6 +1743,14 @@ function accumulateFrameStats (samples, stats = fpsStats) {
     prev.seconds += s.seconds
     prev.preMs += s.preMs ?? 0
     prev.drawMs += s.drawMs ?? 0
+    // worst is the worst ever seen, not an average -- a single bad frame is the thing
+    // being hunted, and averaging it away is how the previous version missed it.
+    prev.worstMs = Math.max(prev.worstMs ?? 0, s.worstMs ?? 0)
+    prev.lateCount = (prev.lateCount ?? 0) + (s.lateCount ?? 0)
+    if ((s.latePeriodMs ?? 0) > 0) {
+      prev.latePeriodSum = (prev.latePeriodSum ?? 0) + s.latePeriodMs
+      prev.latePeriodN = (prev.latePeriodN ?? 0) + 1
+    }
     prev.min = Math.min(prev.min, fps)
     prev.max = Math.max(prev.max, fps)
     prev.last = fps
@@ -1780,20 +1792,32 @@ function formatFpsReport (stats = fpsStats) {
   lines.push('ms columns are per frame. work = pre + draw; wait = frame - work.')
   lines.push('pre is the runtime before handing over (resize); draw is the saver.')
   lines.push('')
+  lines.push('worst = longest single gap between frames. late = frames over 1.5x pace.')
+  lines.push('every = mean ms between late frames. A cadence there names the cause:')
+  lines.push('  ~1600 detection cycle | ~5000 board refresh | ~15000 fps sample')
+  lines.push('')
   lines.push(
-    'saver'.padEnd(24) + 'fps'.padStart(6) + 'draw'.padStart(7) +
-    'pre'.padStart(7) + 'work'.padStart(7) + 'frame'.padStart(7) +
-    'wait'.padStart(7) + 'n'.padStart(4) + '  size')
+    'saver'.padEnd(24) + 'fps'.padStart(6) + 'work'.padStart(7) +
+    'frame'.padStart(7) + 'worst'.padStart(8) + 'late'.padStart(6) +
+    'every'.padStart(8) + 'n'.padStart(4) + '  size')
   for (const r of rows) {
+    const period = (r.latePeriodN ?? 0) > 0 ? (r.latePeriodSum / r.latePeriodN) : 0
     lines.push(
       r.label.slice(0, 23).padEnd(24) +
       r.mean.toFixed(1).padStart(6) +
-      r.draw.toFixed(2).padStart(7) +
-      r.pre.toFixed(2).padStart(7) +
       r.work.toFixed(2).padStart(7) +
       r.frame.toFixed(2).padStart(7) +
-      (r.frame - r.work).toFixed(2).padStart(7) +
+      (r.worstMs ?? 0).toFixed(1).padStart(8) +
+      String(r.lateCount ?? 0).padStart(6) +
+      (period > 0 ? period.toFixed(0) : '-').padStart(8) +
       String(r.samples).padStart(4) + '  ' + r.size)
+  }
+  // draw/pre still matter when work IS the problem, so they stay -- on a detail line
+  // each rather than a wider table nobody can read on a terminal.
+  lines.push('')
+  for (const r of rows) {
+    lines.push('  ' + r.label.slice(0, 23).padEnd(24) +
+      'draw ' + r.draw.toFixed(2) + 'ms   pre ' + r.pre.toFixed(2) + 'ms')
   }
   return lines.join('\n')
 }
