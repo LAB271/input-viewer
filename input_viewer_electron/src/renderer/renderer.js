@@ -900,6 +900,58 @@ async function getSystemVolume() {
 /**
  * Sync system volume from OS to UI (for when user changes volume externally)
  */
+/**
+ * System-volume polling, while the dropdown is open and not otherwise.
+ *
+ * This used to run every 2 seconds for the life of the app. On Windows each poll
+ * spawns PowerShell and calls `Add-Type -TypeDefinition`, which compiles C# at
+ * runtime to reach the audio API -- so the wall was starting a process and running a
+ * compiler every 2 seconds, forever, to update a slider nobody could see.
+ *
+ * Confirmed on the wall by sampling PIDs six seconds apart: 12244,15724 became
+ * 15724,18592. The churn is real. Its cost is invisible to process accounting,
+ * because an exited process's CPU is not attributed to anything -- which is also why
+ * it never showed up in the per-process breakdown.
+ *
+ * syncSystemVolume's entire body writes to elements.dropdownSystemVolume and its
+ * label. Nothing else reads the value. So the fix is not to poll more cheaply but to
+ * poll only while the thing it updates is on screen.
+ */
+const VOLUME_POLL_MS = 2000
+
+// Safety net for the hover path: entering the trigger and leaving without crossing
+// the panel produces no mouseleave, so a missed stop would poll forever. Nobody
+// holds the dropdown open this long without touching it.
+const VOLUME_POLL_MAX_MS = 30_000
+
+let volumePollTimer = null
+let volumePollStopTimer = null
+
+function startVolumePolling () {
+  if (volumePollTimer === null) {
+    volumePollTimer = setInterval(syncSystemVolume, VOLUME_POLL_MS)
+    // Immediately too, so opening the dropdown does not show a stale value for the
+    // first two seconds.
+    syncSystemVolume()
+  }
+  clearTimeout(volumePollStopTimer)
+  volumePollStopTimer = setTimeout(stopVolumePolling, VOLUME_POLL_MAX_MS)
+}
+
+function stopVolumePolling () {
+  if (volumePollTimer !== null) {
+    clearInterval(volumePollTimer)
+    volumePollTimer = null
+  }
+  clearTimeout(volumePollStopTimer)
+  volumePollStopTimer = null
+}
+
+/** True while the poll is running. Exported for tests. */
+function volumePollingActive () {
+  return volumePollTimer !== null
+}
+
 async function syncSystemVolume() {
   const volume = await getSystemVolume()
   // Update UI if it differs from current slider value
@@ -2526,7 +2578,12 @@ function toggleDropdown() {
   state.dropdownOpen = !state.dropdownOpen
   updateDropdownState()
   // Touch path into the dropdown (#242). Only on open; closing needs no sweep.
-  if (state.dropdownOpen) refreshInputThumbnails()
+  if (state.dropdownOpen) {
+    refreshInputThumbnails()
+    startVolumePolling()
+  } else {
+    stopVolumePolling()
+  }
 }
 
 /**
@@ -2535,6 +2592,7 @@ function toggleDropdown() {
 function closeDropdown() {
   state.dropdownOpen = false
   updateDropdownState()
+  stopVolumePolling()
 }
 
 /**
@@ -2825,15 +2883,18 @@ function setupEventListeners() {
     // (#dropdown-trigger:hover + #dropdown-panel), so this listener -- which
     // already existed for the cursor -- is the only JS signal that it opened.
     refreshInputThumbnails()
+    startVolumePolling()
   })
 
   elements.dropdownPanel.addEventListener('mouseenter', () => {
     document.body.classList.add('cursor-visible')
     clearTimeout(state.cursorTimeout)
+    startVolumePolling()
   })
 
   elements.dropdownPanel.addEventListener('mouseleave', () => {
     showCursor() // Reset cursor timeout
+    stopVolumePolling()
   })
 
   // View mode buttons in dropdown
@@ -3635,8 +3696,8 @@ async function init() {
   // Initialize system volume from actual system (async)
   syncSystemVolume()
 
-  // Start system volume sync polling (every 2 seconds)
-  setInterval(syncSystemVolume, 2000)
+  // No polling loop here any more. One read at startup so the slider is right the
+  // first time the dropdown is opened; after that it polls only while open.
 
   // Get video devices and start streams
   await getVideoDevices()
@@ -3787,6 +3848,9 @@ export {
   syncNoSignalBoards,
   accumulateFrameStats,
   formatFpsReport,
+  startVolumePolling,
+  stopVolumePolling,
+  volumePollingActive,
   syncArtnetFrameObserver,
   refreshNoSignalBoards,
   applyForcedNoSignal,
