@@ -9,6 +9,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Electron Version (v3.x)
 
+### [3.1.0] - 2026-08-25
+
+Art-Net grows up: the lighting is configurable from the UI, can differ per
+screensaver, and puts the room back when the screensaver ends.
+
+#### Added
+
+- **Art-Net settings in the UI** — Settings now has an Art-Net Lighting section
+  with the relay URL, target, max brightness, spot depth and release scene. These
+  were file-only, which meant editing `settings.json` with the app closed, since
+  it rewrites that file whenever any setting changes
+- **Per-screensaver lighting** (`artnetSceneBySaver`, or the Per Screensaver list
+  in settings). Each screensaver can drive the lights from its own picture (the
+  default), hold a fixed scene, run an effect, or leave the room alone. Rows are
+  rendered from the registry, so a new screensaver appears automatically
+- **The room is restored when the screensaver ends.** On activation the app reads
+  `GET /status` and remembers the per-strip colours plus any effect already
+  running; when the signal comes back it writes that state back. Plugging a
+  laptop in returns the lighting to however it actually was — including *off* —
+  rather than to a configured guess. This is the first and only read this app
+  makes of the relay; everything else it does there writes
+
+  Rotation between screensavers deliberately does **not** re-read that state. By
+  then the fixtures are showing the app's own lighting, so a second read would
+  destroy the only record of what was there before.
+
+  Where the read fails there is nothing to restore to, and it falls back to
+  `artnetReleaseScene` if set and otherwise sends nothing at all. Never a
+  blackout: a room that may have people in it does not go dark because a video
+  signal came back.
+
+#### Fixed
+
+- **`artnetSpotDepth` could not persist.** `saveSettings()` builds an explicit
+  allowlist and a key missing from it is silently reset to its default on the
+  next load. The setting shipped in 3.0.0 without being added to that list, so it
+  loaded, worked, and was reverted to `0.5` by the next unrelated save — changing
+  the volume was enough. The allowlist test now derives its expected keys from
+  the main process's defaults, so adding a setting without wiring it in fails
+- Rotation stopped a running effect based on the previous screensaver's *mode*,
+  but a reactive screensaver inherits the global `artnetTarget` — which may
+  itself be an effect. An effect could therefore be running while the mode read
+  `reactive`, skipping the stop in exactly the case the guard existed for, and
+  leaving the room animating underneath the next screensaver's scene
+- A configured release scene returned early without stopping a running effect,
+  so the effect kept overwriting the scene it was meant to hand over to
+
 ### [3.0.0] - 2026-08-25
 
 The screensaver set numbers 29, and the videowall renders them **43× faster** than
