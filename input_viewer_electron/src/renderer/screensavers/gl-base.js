@@ -251,6 +251,22 @@ export function sampleFrameCounters(now = performance.now()) {
   return out
 }
 
+/**
+ * Geometry of the frame sample grid handed to observers.
+ *
+ * Exported because a consumer that wants to know WHERE in the frame the light is
+ * -- rather than just its average colour -- cannot recover the layout from a flat
+ * byte array. The Art-Net spot needs exactly that.
+ *
+ * Tiles are written row-major, ty outer and tx inner. **ty = 0 is the BOTTOM row**:
+ * gl.readPixels has its origin at the bottom-left, so a consumer mapping a tile to
+ * a screen position has to flip y or the picture comes out upside-down.
+ */
+export const SAMPLE_GRID = Object.freeze({ tile: 8, tilesX: 8, tilesY: 4 })
+export const SAMPLE_COUNT =
+  SAMPLE_GRID.tile * SAMPLE_GRID.tile * SAMPLE_GRID.tilesX * SAMPLE_GRID.tilesY
+const { tile: TILE, tilesX: TILES_X, tilesY: TILES_Y } = SAMPLE_GRID
+
 export function observeFrames(fn) {
   frameObservers.push(fn)
   return () => {
@@ -398,10 +414,6 @@ export function createGLRuntime(canvas, options = {}) {
   // samples the whole composition rather than one corner, costs a few hundred
   // bytes, and is limited by the sync rather than the volume -- which is why
   // observers rate-limit themselves to 1Hz.
-  const TILE = 8
-  const TILES_X = 8
-  const TILES_Y = 4
-  const SAMPLE_COUNT = TILE * TILE * TILES_X * TILES_Y
   // Per-runtime, so two runtimes do not starve each other of readbacks.
   let lastObserverNotify = 0
   let samplePixels = null

@@ -333,7 +333,8 @@ function getDefaultSettings() {
     artnetUrl: '',
     artnetTarget: 'all',
     artnetReleaseScene: '',
-    artnetMaxBrightness: 0.8
+    artnetMaxBrightness: 0.8,
+    artnetSpotDepth: 0.5
   }
 }
 
@@ -3786,7 +3787,8 @@ async function init() {
       url: state.settings.artnetUrl,
       target: state.settings.artnetTarget,
       releaseScene: state.settings.artnetReleaseScene,
-      maxBrightness: state.settings.artnetMaxBrightness
+      maxBrightness: state.settings.artnetMaxBrightness,
+      spotDepth: state.settings.artnetSpotDepth
     })
   })
   syncArtnetFrameObserver()

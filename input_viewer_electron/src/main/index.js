@@ -104,7 +104,12 @@ const defaultSettings = {
   // the relay has no authentication, so the URL is the entire capability.
   // Guessing a default would be guessing about somebody's network.
   //
-  // artnetTarget: 'all' | 'group:<name>' | 'strip:<name>'
+  // artnetTarget: 'all' | 'group:<name>' | 'strip:<name>' | 'effect:<name>'
+  //   An `effect:` target drives one of the relay's field effects instead of a
+  //   flat colour -- 'effect:spot' is the useful one, a movable circle of light
+  //   that follows the bright part of the wall. See artnet-sync.js.
+  // artnetSpotDepth: where in the room the spot sits, 0..1 front to back. Only
+  //   the horizontal axis is taken from the picture; see DEFAULT_SPOT_DEPTH.
   // artnetReleaseScene: posted when the screensaver stops; unset means the
   //   fixtures simply keep their last colour, which is what you want in a room
   //   that may have people standing in it.
@@ -112,7 +117,8 @@ const defaultSettings = {
   artnetUrl: '',
   artnetTarget: 'all',
   artnetReleaseScene: '',
-  artnetMaxBrightness: 0.8
+  artnetMaxBrightness: 0.8,
+  artnetSpotDepth: 0.5
 }
 
 // Load settings from file
