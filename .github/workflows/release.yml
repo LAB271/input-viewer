@@ -8,6 +8,22 @@ on:
         required: false
         type: boolean
         default: false
+      # Commit-message analysis cannot express a deliberate version decision, and
+      # `force_release` only rescues a `none` bump -- it cannot raise the level.
+      # Without this input the only way to ship a major is to write `!:` into a
+      # commit subject, which claims a breaking change whether or not one
+      # happened. An explicit choice recorded in the run is more honest than a
+      # fabricated marker in the history.
+      bump:
+        description: 'Version bump to apply (auto = derive from commit messages)'
+        required: false
+        type: choice
+        default: auto
+        options:
+          - auto
+          - patch
+          - minor
+          - major
 
 jobs:
   # =============================================================================
@@ -37,6 +53,16 @@ jobs:
       - name: Analyze commits for version bump
         id: analyze
         run: |
+          # An explicit bump wins outright, and skips analysis rather than being
+          # overridden after it -- otherwise a run with no qualifying commits
+          # would take the `none` early exit below and ignore the request.
+          REQUESTED="${{ inputs.bump }}"
+          if [ -n "$REQUESTED" ] && [ "$REQUESTED" != "auto" ]; then
+            echo "Explicit bump requested: $REQUESTED (commit analysis skipped)"
+            echo "bump=$REQUESTED" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
           LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
 
           if [ -z "$LAST_TAG" ]; then
