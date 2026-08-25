@@ -347,16 +347,21 @@ describe('spot mode release', () => {
     expect(relay.calls).toHaveLength(0)
   })
 
-  it('prefers a configured release scene over stopping', async () => {
+  it('stops the effect BEFORE posting the release scene', async () => {
     const relay = stubRelay()
     const { sync, h } = build(relay, config({ releaseScene: 'warm_wit' }))
     await send(sync, h, oneTile(2, 1))
     relay.calls.length = 0
 
-    sync.release()
+    await sync.release()
     await h.flush()
-    expect(relay.calls).toHaveLength(1)
-    expect(relay.calls[0].url).toBe('http://pi.labs:8000/scenes/warm_wit')
+    // Both, and in this order. Posting the scene while the effect still runs
+    // would let the effect overwrite it on its next tick -- the room would keep
+    // moving and the scene would never be seen.
+    expect(relay.calls.map(c => c.url)).toEqual([
+      'http://pi.labs:8000/stop',
+      'http://pi.labs:8000/scenes/warm_wit'
+    ])
   })
 
   it('still sends nothing at all when disabled', async () => {

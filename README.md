@@ -188,9 +188,48 @@ Operational notes:
 - **One colour per second, at most**, with a fade slightly longer than that
   interval so consecutive sends glide rather than step.
 - **The relay has no authentication**, so the URL is the entire capability. Treat
-  it accordingly. The app only ever writes — a colour, or an effect and its
-  parameters, plus optionally a scene name or `/stop` when the screensaver ends.
-  It never reads from the relay.
+  it accordingly. The app writes a colour, or an effect and its parameters, plus
+  a scene name or `/stop` when the screensaver ends. It performs exactly one kind
+  of read — `GET /status`, to learn the room's state before taking it over so it
+  can be put back afterwards, and to list the scene names for the settings
+  dropdowns.
+
+#### Per-screensaver lighting, and getting the room back
+
+Each screensaver can drive the room differently. In **Settings → Art-Net
+Lighting → Per Screensaver**, or as `artnetSceneBySaver` keyed by a screensaver's
+display name:
+
+```json
+{
+  "artnetSceneBySaver": {
+    "Matrix Rain": "scene:lab_modus",
+    "Julia Family": "effect:spot",
+    "DVD Logo": "off"
+  }
+}
+```
+
+- **`reactive`** (the default, and what an absent entry means) — drive the lights
+  from the picture, using `artnetTarget`
+- **`scene:<name>`** — hold that scene for as long as this screensaver is up
+- **`effect:<name>`** — run that effect, overriding `artnetTarget`
+- **`off`** — leave the room alone for this screensaver
+
+**The room is put back when the screensaver ends.** On activation the app reads
+`GET /status` and remembers the per-strip colours, plus any effect that was
+already running; when the signal returns it writes that back. So plugging a
+laptop in restores the lighting to however it actually was — including *off* —
+rather than to a configured guess.
+
+Rotation between screensavers deliberately does **not** re-read that state. By
+then the room is showing the app's own lighting, and re-reading would destroy the
+only record of what was there before.
+
+If the read fails, there is nothing to restore to, and the app falls back to
+`artnetReleaseScene` if one is set and otherwise sends nothing at all — the
+fixtures keep their last colour. Never a blackout: a room that may have people in
+it does not go dark because a video signal came back.
 
 #### Spot mode
 

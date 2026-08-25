@@ -384,8 +384,9 @@ describe('when the relay is unreachable', () => {
       await h.flush()
     }
     expect(Object.keys(sync.getStatus()).sort()).toEqual(
-      ['effectRunning', 'failures', 'lastColour', 'lastError', 'lastSpot',
-        'nextEligibleAt', 'sent'])
+      ['activeMode', 'activeSaver', 'effectRunning', 'failures', 'hasPriorState',
+        'lastColour', 'lastError', 'lastSpot', 'nextEligibleAt', 'runningEffect',
+        'sent'])
   })
 
   it('leaves no timer pending once requests have settled', async () => {

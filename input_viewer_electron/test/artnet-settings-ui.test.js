@@ -81,6 +81,7 @@ describe('the save allowlist', () => {
       artnetReleaseScene: 'warm_wit',
       artnetMaxBrightness: 0.42,
       artnetSpotDepth: 0.27,
+      artnetSceneBySaver: { matrixRain: 'scene:lab_modus' },
     }
     // Guard against the sentinel list itself going stale.
     expect(Object.keys(sentinels).sort()).toEqual([...keys].sort())
@@ -90,7 +91,9 @@ describe('the save allowlist', () => {
 
     expect(saved).toHaveLength(1)
     for (const [k, v] of Object.entries(sentinels)) {
-      expect(saved[0][k], `${k} was dropped by the save allowlist`).toBe(v)
+      // toEqual, not toBe: the per-saver map is an object, and a shallow copy
+      // of it is still a correct round-trip.
+      expect(saved[0][k], `${k} was dropped by the save allowlist`).toEqual(v)
     }
   })
 

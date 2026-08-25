@@ -299,6 +299,102 @@ export function colourEndpoint(baseUrl, target) {
   return `${base}/all`
 }
 
+/**
+ * Resolve what the room should do for a given screensaver.
+ *
+ * `artnetSceneBySaver` maps a saver's **display name** -- the `name` field of its
+ * module, e.g. `'Matrix Rain'`, which is what startScreensaver() returns -- to
+ * one of:
+ *
+ * - `'reactive'` (or absent) -- drive the lights from the picture, using the
+ *   global `artnetTarget`. This is the default, so adding the mapping changes
+ *   nothing until somebody sets an entry.
+ * - `'off'` -- leave the room alone entirely for this saver.
+ * - `'scene:<name>'` -- post that scene once when the saver starts.
+ * - `'effect:<name>'` -- run that effect for this saver, overriding the global
+ *   target.
+ *
+ * @param {string} saver display name, e.g. 'Matrix Rain'
+ * @param {object} bySaver the mapping from settings
+ * @returns {{kind: 'reactive'|'off'|'scene'|'effect', name: string}}
+ */
+export function modeForSaver(saver, bySaver) {
+  const raw = String((bySaver && bySaver[saver]) || 'reactive').trim()
+  if (raw === 'off') return { kind: 'off', name: '' }
+  if (raw.startsWith('scene:')) {
+    const name = raw.slice('scene:'.length).trim()
+    if (name) return { kind: 'scene', name }
+  }
+  if (raw.startsWith('effect:')) {
+    const name = raw.slice('effect:'.length).trim()
+    if (name) return { kind: 'effect', name }
+  }
+  // Anything unrecognised falls back to reactive rather than to silence: a typo
+  // in a hand-edited mapping should look like the old behaviour, not like the
+  // lighting having quietly stopped working.
+  return { kind: 'reactive', name: '' }
+}
+
+/**
+ * Reduce a `GET /status` body to the least we need to put the room back.
+ *
+ * Keeps the per-strip colours, and the name of any effect that was already
+ * running. Everything else in /status is layout or capability information that
+ * restoring cannot change.
+ *
+ * @param {object} status parsed `GET /status` body
+ * @returns {{strips: Array<{name: string, rgb: number[], brightness: number}>,
+ *            effect: string|null, uniform: object|null}|null}
+ */
+export function summariseState(status) {
+  if (!status || !Array.isArray(status.strips)) return null
+  const strips = status.strips
+    .filter(st => st && typeof st.name === 'string' && Array.isArray(st.rgb))
+    .map(st => ({
+      name: st.name,
+      rgb: [Number(st.rgb[0]) || 0, Number(st.rgb[1]) || 0, Number(st.rgb[2]) || 0],
+      brightness: typeof st.brightness === 'number' ? st.brightness : 1
+    }))
+  if (!strips.length) return null
+
+  // The relay reports a running effect as either a name or an object carrying
+  // one. Stored so restore can restart it rather than freezing the room on
+  // whichever frame of the animation we happened to sample.
+  let effect = null
+  const e = status.effect
+  if (typeof e === 'string' && e) effect = e
+  else if (e && typeof e === 'object' && typeof e.name === 'string') effect = e.name
+
+  // Where every strip matches, one /all restores the room instead of forty
+  // POSTs. Not premature: the relay is per-strip only, and the common case by
+  // far -- a room sitting on one scene, or off -- is uniform.
+  const first = strips[0]
+  const uniform = strips.every(st =>
+    st.rgb[0] === first.rgb[0] && st.rgb[1] === first.rgb[1] &&
+    st.rgb[2] === first.rgb[2] && st.brightness === first.brightness)
+    ? { r: first.rgb[0], g: first.rgb[1], b: first.rgb[2], brightness: first.brightness }
+    : null
+
+  return { strips, effect, uniform }
+}
+
+/** `GET /status` -- the room's current per-strip colours and running effect. */
+export function statusEndpoint(baseUrl) {
+  return `${String(baseUrl || '').replace(/\/+$/, '')}/status`
+}
+
+/** `POST /scenes/{name}` */
+export function sceneEndpoint(baseUrl, name) {
+  const base = String(baseUrl || '').replace(/\/+$/, '')
+  return `${base}/scenes/${encodeURIComponent(name)}`
+}
+
+/** `POST /strips/{name}` -- restores one strip's colour. */
+export function stripEndpoint(baseUrl, name) {
+  const base = String(baseUrl || '').replace(/\/+$/, '')
+  return `${base}/strips/${encodeURIComponent(name)}`
+}
+
 /** `POST /effects/{name}` -- starts an effect, body is a flat EffectRequest. */
 export function effectEndpoint(baseUrl, name) {
   const base = String(baseUrl || '').replace(/\/+$/, '')
@@ -363,6 +459,24 @@ async function directFetch(fetchImpl, url, body, setTimer, clearTimer) {
 }
 
 /**
+ * Direct-GET transport, mirroring directFetch for the read path.
+ * @returns {Promise<{ok: boolean, data?: any, error?: string}>}
+ */
+async function directGet(fetchImpl, url, setTimer, clearTimer) {
+  const controller = new AbortController()
+  const abortId = setTimer(REQUEST_TIMEOUT_MS, () => controller.abort())
+  try {
+    const res = await fetchImpl(url, { method: 'GET', signal: controller.signal })
+    if (!res || !res.ok) return { ok: false, error: `HTTP ${res ? res.status : 'no response'}` }
+    return { ok: true, data: await res.json() }
+  } catch (err) {
+    return { ok: false, error: err && err.message ? err.message : String(err) }
+  } finally {
+    clearTimer(abortId)
+  }
+}
+
+/**
  * Create an Art-Net sync client.
  *
  * @param {object} options
@@ -393,9 +507,17 @@ export function createArtnetSync(options) {
   let sent = 0
   let lastColour = null
   let lastSpot = null
-  // Whether the effect is believed to be running on the relay. While false the
-  // next send starts it; after that, sends are cheap partial nudges.
-  let effectRunning = false
+  // The room's state before we took it over, and the saver currently driving it.
+  let priorState = null
+  let activeSaver = null
+  let activeMode = { kind: 'reactive', name: '' }
+  // The name of the effect believed to be running on the relay, or null.
+  //
+  // A name rather than a boolean, because the effect can change without ever
+  // stopping: a per-saver `effect:aurora` replacing a global `effect:spot` needs
+  // a fresh POST /effects/aurora, and a boolean would report "already running"
+  // and send a /field/params nudge that aurora never receives.
+  let runningEffect = null
 
   function backoffUntil() {
     if (failures === 0) return 0
@@ -415,7 +537,25 @@ export function createArtnetSync(options) {
       maxBrightness: typeof c.maxBrightness === 'number' ? c.maxBrightness : 1,
       spotDepth: typeof c.spotDepth === 'number'
         ? Math.max(0, Math.min(1, c.spotDepth))
-        : DEFAULT_SPOT_DEPTH
+        : DEFAULT_SPOT_DEPTH,
+      sceneBySaver: c.sceneBySaver && typeof c.sceneBySaver === 'object'
+        ? c.sceneBySaver
+        : {}
+    }
+  }
+
+  /** GET helper. Never throws; returns null on any failure. */
+  async function get(url) {
+    try {
+      const res = fetchImpl
+        ? await directGet(fetchImpl, url, setTimer, clearTimer)
+        : await send({ url, method: 'GET' })
+      if (!res || !res.ok) throw new Error(res && res.error ? res.error : 'read failed')
+      return res.data ?? null
+    } catch (err) {
+      lastError = err && err.message ? err.message : String(err)
+      console.warn(`[Art-Net] read failed: ${lastError}`)
+      return null
     }
   }
 
@@ -440,6 +580,67 @@ export function createArtnetSync(options) {
     }
   }
 
+  /**
+   * Write a snapshot back to the fixtures.
+   *
+   * An effect that was already running before we arrived is restarted by name
+   * rather than having its sampled frame written back as static colour -- the
+   * room was moving when we found it, so it should be moving when we leave.
+   * Its parameters are not recoverable from /status, so it restarts at the
+   * relay's defaults; that is closer to "as it was" than a frozen frame.
+   */
+  async function restore(cfg, snapshot) {
+    if (snapshot.effect) {
+      await post(effectEndpoint(cfg.url, snapshot.effect), {})
+      return
+    }
+    if (snapshot.uniform) {
+      const u = snapshot.uniform
+      await post(colourEndpoint(cfg.url, 'all'), {
+        r: u.r, g: u.g, b: u.b, brightness: u.brightness, transition_ms: TRANSITION_MS
+      })
+      return
+    }
+    // Per-strip only when the room genuinely was not uniform. Sequential rather
+    // than parallel: forty simultaneous POSTs at a relay that runs a DMX output
+    // loop is a burst it has no reason to absorb, and release is not on any
+    // frame budget.
+    for (const st of snapshot.strips) {
+      await post(stripEndpoint(cfg.url, st.name), {
+        r: st.rgb[0], g: st.rgb[1], b: st.rgb[2],
+        brightness: st.brightness, transition_ms: TRANSITION_MS
+      })
+    }
+  }
+
+  /**
+   * Whether the given mode results in an effect running.
+   *
+   * Not simply `kind === 'effect'`: a reactive saver inherits the global
+   * `artnetTarget`, which may itself be an `effect:` target.
+   */
+  function wantsEffect(mode, cfg) {
+    if (mode.kind === 'effect') return true
+    if (mode.kind === 'reactive') return Boolean(effectNameFor(cfg.target))
+    return false
+  }
+
+  /**
+   * Put the room into whatever the active saver asks for.
+   *
+   * Reactive modes do nothing here: they are driven from the frames themselves,
+   * and posting a colour now would only be overwritten a moment later.
+   */
+  async function applyMode(cfg) {
+    if (activeMode.kind === 'scene') {
+      await post(sceneEndpoint(cfg.url, activeMode.name), {})
+      return
+    }
+    // An effect mode needs nothing here: offerFrame starts it on the next frame,
+    // so it begins with a colour taken from the picture rather than the relay's
+    // defaults, and the name comparison decides whether a start is even needed.
+  }
+
   return {
     /**
      * Offer a sampled frame. Cheap to call every frame: rate limiting, the
@@ -451,6 +652,11 @@ export function createArtnetSync(options) {
     offerFrame(rgba) {
       const cfg = config()
       if (!cfg.enabled || !cfg.url) return
+      // A saver mapped to a scene or to 'off' is not driven from the picture.
+      // Frames keep arriving either way -- the saver is still rendering -- so
+      // this gate is what makes a per-saver scene hold instead of being
+      // overwritten a second later by the reactive colour.
+      if (activeMode.kind === 'off' || activeMode.kind === 'scene') return
       const t = now()
       if (t - lastSentAt < SEND_INTERVAL_MS) return
       if (failures > 0 && t < backoffUntil()) return
@@ -463,7 +669,9 @@ export function createArtnetSync(options) {
       inFlight = true
       sent++
 
-      const effect = effectNameFor(cfg.target)
+      const effect = activeMode.kind === 'effect'
+        ? activeMode.name
+        : effectNameFor(cfg.target)
       if (effect) {
         const focus = luminanceFocus(rgba)
         // Brightness is PRE-MULTIPLIED into rgb rather than sent as its own
@@ -488,11 +696,11 @@ export function createArtnetSync(options) {
         // that is a partial /field/params update, which is one small POST rather
         // than a restart -- restarting each second would reset the effect's own
         // animation phase and make it stutter.
-        const starting = !effectRunning
+        const starting = runningEffect !== effect
         const url = starting ? effectEndpoint(cfg.url, effect) : fieldParamsEndpoint(cfg.url)
         const body = starting ? spot : { params: spot }
         post(url, body)
-          .then((ok) => { effectRunning = ok })
+          .then((ok) => { runningEffect = ok ? effect : null })
           .finally(() => { inFlight = false })
         return
       }
@@ -505,32 +713,124 @@ export function createArtnetSync(options) {
     },
 
     /**
-     * Stop driving the lights.
+     * Take the room over for a screensaver, remembering what it looked like.
      *
-     * In colour mode this sends nothing by default: the fixtures keep their last
-     * colour, so a room with people in it does not suddenly go dark and whatever
-     * normally owns the lighting takes over on its next command. A scene is
-     * posted only if one is configured.
+     * The snapshot is the whole point of this method. `artnetReleaseScene` could
+     * already put the room somewhere fixed on release, but "somewhere fixed" is
+     * not "how you left it": the lights might have been off, or on a scene
+     * someone picked five minutes earlier. Reading `/status` first is the only
+     * way to put back what was actually there.
      *
-     * EFFECT MODE IS DIFFERENT, and it is why this is not simply the same path.
-     * A colour that is left alone is static. An *effect* that is left alone keeps
-     * running: the room would go on pulsing and sweeping indefinitely after the
-     * wall woke up, with nothing driving it and no obvious way for anyone in the
-     * room to work out why. So an effect we started is one we stop. A configured
-     * release scene still wins, since that both ends the effect and leaves the
-     * room somewhere deliberate.
+     * Idempotent per activation. Calling this again for a rotation would
+     * re-snapshot our OWN lighting and the original state would be lost for
+     * good, so a second call only switches mode -- see `rotate`.
+     *
+     * @param {string} saver display name of the saver that is starting
      */
-    release() {
+    async activate(saver) {
       const cfg = config()
-      const wasRunning = effectRunning
-      effectRunning = false
+      activeSaver = saver
+      activeMode = modeForSaver(saver, cfg.sceneBySaver)
       if (!cfg.enabled || !cfg.url) return
-      if (cfg.releaseScene) {
-        const scene = encodeURIComponent(cfg.releaseScene)
-        post(`${cfg.url.replace(/\/+$/, '')}/scenes/${scene}`, {})
+
+      if (!priorState) {
+        priorState = summariseState(await get(statusEndpoint(cfg.url)))
+      }
+      await applyMode(cfg)
+    },
+
+    /**
+     * Switch to a different saver mid-activation, keeping the original snapshot.
+     *
+     * Rotation happens every few minutes while the wall is dark. Treating it as
+     * a fresh activation is the obvious mistake: the "before" state would become
+     * whatever the previous saver had left on the fixtures, and the room would
+     * never return to how it started.
+     *
+     * @param {string} saver display name of the saver being rotated to
+     */
+    async rotate(saver) {
+      const cfg = config()
+      activeSaver = saver
+      activeMode = modeForSaver(saver, cfg.sceneBySaver)
+      if (!cfg.enabled || !cfg.url) return
+
+      // Leaving an effect behind for a saver that does not want one would keep
+      // the room animating under a static scene.
+      //
+      // Gated on what is RUNNING, not on what the previous mode was. A reactive
+      // saver with a global `effect:` target has an effect running while its own
+      // mode is 'reactive', so keying off the previous mode would skip the stop
+      // in exactly the case this guard exists for.
+      if (runningEffect && !wantsEffect(activeMode, cfg)) {
+        runningEffect = null
+        await post(stopEndpoint(cfg.url), {})
+      }
+      await applyMode(cfg)
+    },
+
+    /**
+     * Hand the room back.
+     *
+     * Order of preference, most specific first:
+     *
+     * 1. **A snapshot taken at activation** -- put back exactly what was there,
+     *    including "off". This is what makes plugging a laptop in return the
+     *    room to how it was rather than to a guess.
+     * 2. **A configured release scene** -- the pre-3.1 behaviour, kept because
+     *    an install may prefer a known-good scene to whatever happened to be on
+     *    the fixtures.
+     * 3. **Nothing** -- the fixtures keep their last colour. Never a blackout:
+     *    a room that may have people in it does not get plunged into darkness
+     *    because a video signal came back.
+     *
+     * An effect we started is always stopped first, whichever branch runs. An
+     * effect left running would keep animating under the restored colours.
+     */
+    async release() {
+      const cfg = config()
+      const wasRunning = Boolean(runningEffect)
+      const snapshot = priorState
+      runningEffect = null
+      priorState = null
+      activeSaver = null
+      activeMode = { kind: 'reactive', name: '' }
+      if (!cfg.enabled || !cfg.url) return
+
+      if (wasRunning) await post(stopEndpoint(cfg.url), {})
+
+      if (snapshot) {
+        await restore(cfg, snapshot)
         return
       }
-      if (wasRunning) post(stopEndpoint(cfg.url), {})
+      if (cfg.releaseScene) {
+        await post(sceneEndpoint(cfg.url, cfg.releaseScene), {})
+      }
+    },
+
+    /**
+     * Read the relay's scene and effect names, for the settings dropdowns.
+     *
+     * Site-specific: `warm_wit` and `lab_modus` exist on this install and mean
+     * nothing on another, so the list cannot be hardcoded. Returns null on any
+     * failure and the panel falls back to whatever is already configured --
+     * losing a saved mapping because a relay was briefly unreachable would be
+     * worse than an incomplete dropdown.
+     *
+     * @returns {Promise<{scenes: string[], effects: string[]}|null>}
+     */
+    async readCatalogue() {
+      const cfg = config()
+      if (!cfg.enabled || !cfg.url) return null
+      const status = await get(statusEndpoint(cfg.url))
+      if (!status) return null
+      return {
+        scenes: Array.isArray(status.scenes) ? status.scenes.filter(n => typeof n === 'string') : [],
+        // /status lists scenes and groups but not effects; the effect names are
+        // fixed in the relay's own code, so the field-capable ones are named
+        // here. Kept to the ones that take a colour and look right on a wall.
+        effects: ['spot', 'ripple', 'plasma', 'blobs', 'aurora', 'sweep', 'tunnel']
+      }
     },
 
     /** Diagnostics for the settings UI and the tests. */
@@ -541,7 +841,11 @@ export function createArtnetSync(options) {
         lastError,
         lastColour,
         lastSpot,
-        effectRunning,
+        effectRunning: Boolean(runningEffect),
+        runningEffect,
+        activeSaver,
+        activeMode: activeMode.kind,
+        hasPriorState: Boolean(priorState),
         nextEligibleAt: Math.max(lastSentAt + SEND_INTERVAL_MS, backoffUntil())
       }
     }
