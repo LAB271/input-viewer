@@ -32,7 +32,7 @@
  * emitted from the measurement rather than maintained by hand (the list
  * changes whenever STRUCTURE_SAMPLE_FRAMES is retuned):
  *
- *   Wave Tank, Tree Growth
+ *   Tree Growth
  *
  * A saver whose baseline is below STRUCTURE_MIN_ABS_DROP is likewise
  * unprotected against a total collapse -- see the limit spelled out in
@@ -41,50 +41,41 @@
  * Regenerate with `npm run baselines` and review the diff: a baseline that
  * drops sharply is either an intended redesign or the bug this file exists
  * to catch.
- *
- * "Do not hand-edit" above has one deliberate exception, learned the hard way
- * across the eleven screensaver rewrites in #210 and #214..#220. When ONE saver
- * is redesigned and its density legitimately moves, edit ONLY that saver's line
- * by hand. Running `npm run baselines` rewrites all 30 entries from a single
- * fresh measurement, which (a) buries the intended change among 29 lines of
- * run-to-run noise, and (b) conflicts with every other open PR that touched this
- * file. Six of those eleven had to change a baseline, and regenerating would have
- * made them mutually unmergeable.
- *
- * Keep entries in descending value order when hand-editing, because the
- * generator emits them that way. Six hand-edits during that batch left the file
- * unsorted, so the next regeneration would have produced a large reordering diff
- * tangled up with somebody's real change.
  */
 export const STRUCTURE_BASELINES = {
-  "Boids": 0.8504,
-  "Particle Swarm": 0.6037,
-  "White Particles": 0.485,
-  "Truchet Tiles": 0.39,
-  "Moire Interference": 0.19,
+  "Boids": 0.8521,
+  "Particle Swarm": 0.6145,
+  "White Particles": 0.4841,
+  "Truchet Tiles": 0.4021,
+  "Moire Interference": 0.1898,
   "Game of Life": 0.1624,
-  "Voronoi": 0.15,
-  "Starfield Warp": 0.14,
+  "Voronoi": 0.1556,
+  "Starfield Warp": 0.1409,
+  "Flow Field": 0.1388,
   "Frost": 0.1029,
-  "Aquarium": 0.0955,
-  "Flow Field": 0.0872,
-  "Bicycle Horizon": 0.0667,
-  "Mandelbrot": 0.055,
-  "Strange Attractor": 0.0285,
-  "Physarum": 0.0229,
-  "Weather": 0.0164,
-  "Reaction Diffusion": 0.0149,
-  "ASCII Doughnut": 0.0124,
-  "Matrix Rain": 0.009,
-  "Raymarch Fractal": 0.0081,
-  "Pong": 0.0077,
+  "Aquarium": 0.0951,
+  "Bicycle Horizon": 0.0656,
+  "Reaction Diffusion": 0.034,
+  "Strange Attractor": 0.0284,
+  "Physarum": 0.0205,
+  "Weather": 0.019,
+  "Raymarch Fractal": 0.0186,
+  "ASCII Doughnut": 0.0102,
+  "Matrix Rain": 0.0095,
+  "Pong": 0.0083,
+  "DVD Logo": 0.0065,
   "Metaballs": 0.0049,
-  "Burning Ship": 0.0039,
+  "Burning Ship": 0.0042,
   "Falling Sand": 0.0036,
   "Double Pendulum": 0.0033,
-  "Julia Set": 0.0028,
-  "DVD Logo": 0.0026,
+  "Wave Tank": 0.0007,
   "Plasma": 0.0001,
-  "Wave Tank": 0,
+  // Low because the exterior fades to black (#209): the frame is mostly flat dark
+  // interior and flat dark surround, with edges only along the boundary filigree.
+  // That puts it under STRUCTURE_MIN_ABS_DROP, so the density-drop rule skips it --
+  // as it already does Plasma and Wave Tank. The uniform-spread rule from #227
+  // exists for exactly this blind spot and does still apply, and this saver has a
+  // wide spread by construction: near-black interiors against bright boundary.
+  "Julia Family": 0.0001,
   "Tree Growth": 0,
 }

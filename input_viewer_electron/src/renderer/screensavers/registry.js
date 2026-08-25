@@ -24,8 +24,7 @@ import dvdLogo from './dvd-logo.js'
 import plasma from './plasma.js'
 import flowField from './flow-field.js'
 import raymarch from './raymarch.js'
-import mandelbrot from './mandelbrot.js'
-import julia from './julia.js'
+import juliaFamily from './julia-family.js'
 import burningShip from './burning-ship.js'
 import reactionDiffusion from './reaction-diffusion.js'
 import particleSwarm from './particle-swarm.js'
@@ -56,8 +55,7 @@ export const SCREENSAVERS = [
   plasma,
   flowField,
   raymarch,
-  mandelbrot,
-  julia,
+  juliaFamily,
   burningShip,
   reactionDiffusion,
   particleSwarm,

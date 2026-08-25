@@ -6,7 +6,7 @@ Input Viewer is a lightweight video input display application for viewing multip
 
 - **Dual/Single View** - Display one or two video inputs side by side
 - **No-Signal Detection** - Automatically shows "NO SIGNAL" when input is disconnected
-- **30 Screensavers** - GPU-rendered, shown when all inputs have no signal (5 min timeout)
+- **29 Screensavers** - GPU-rendered, shown when all inputs have no signal (5 min timeout)
 - **Freeze Frame** - Pause the display without affecting the source
 - **Audio Controls** - Control capture card volume and system output
 - **Remote Keyboard** - Forward clicker presses to a presenter PC over network
@@ -156,7 +156,7 @@ For touch screen setups:
 ## Screensavers
 
 When all video feeds show "no signal" for 5 minutes, a screensaver appears. There are
-**30**, one picked at random, and it changes every 10 minutes. The rotation never picks
+**29**, one picked at random, and it changes every 10 minutes. The rotation never picks
 the same one twice in a row.
 
 Each screensaver also looks different every time it starts — the random choices inside
@@ -187,33 +187,31 @@ Listed in rotation order, which is the order `+` and `-` step through.
 2. Plasma
 3. Flow Field
 4. Raymarch Fractal
-5. Mandelbrot
-6. Julia Set
-7. Burning Ship
-8. Reaction Diffusion
-9. Particle Swarm
-10. White Particles
-11. Boids
-12. Strange Attractor
-13. Voronoi
-14. Metaballs
-15. Game of Life
-16. Matrix Rain
-17. Starfield Warp
-18. Pong
-19. Truchet Tiles
-20. Moire Interference
-21. ASCII Doughnut
-22. Double Pendulum
-23. Wave Tank
-24. Falling Sand
-25. Frost
-26. Tree Growth
-27. Physarum
-28. Aquarium
-29. Bicycle Horizon
-30. Weather
-<!-- /SCREENSAVER-LIST -->
+5. Julia Family
+6. Burning Ship
+7. Reaction Diffusion
+8. Particle Swarm
+9. White Particles
+10. Boids
+11. Strange Attractor
+12. Voronoi
+13. Metaballs
+14. Game of Life
+15. Matrix Rain
+16. Starfield Warp
+17. Pong
+18. Truchet Tiles
+19. Moire Interference
+20. ASCII Doughnut
+21. Double Pendulum
+22. Wave Tank
+23. Falling Sand
+24. Frost
+25. Tree Growth
+26. Physarum
+27. Aquarium
+28. Bicycle Horizon
+29. Weather<!-- /SCREENSAVER-LIST -->
 
 ### Weather and Art-Net
 
