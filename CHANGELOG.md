@@ -7,11 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## Electron Version (v2.x)
+## Electron Version (v3.x)
 
-### [Unreleased]
+### [3.0.0] - 2026-08-25
 
-Merged to `main` but not yet released. The screensaver set now numbers 30.
+The screensaver set numbers 29, and the videowall renders them **43× faster** than
+it did at the start of the 2.x line.
+
+This release consolidates the 2.14.0–2.19.0 tags, which shipped incrementally but
+were never written up here. No API or settings key was removed: 3.0.0 marks a
+milestone rather than a break, so an existing `settings.json` carries over
+untouched.
+
+#### Performance
+
+The wall was running the split-flap boards and several screensavers at a few
+frames per second. Three causes, all found by measurement after three plausible
+hypotheses turned out to be wrong:
+
+- **A per-frame GPU readback cost 40×.** Art-Net's frame sampling ran even with
+  Art-Net disabled. Gating it on the setting and rate-limiting the readback to 1Hz
+  took the wall from **1.4 fps to 45.3**
+- **A system-volume poll cost the rest.** It shelled out to PowerShell every two
+  seconds, compiling C# via `Add-Type` each time. Scoping it to when the dropdown
+  is actually open took **45.3 fps to 59.7** — the vsync ceiling
+- **The split-flap boards kept animating underneath the screensaver** that
+  covered them, and now stop
+
+Frame time is now 0.25ms of work in a 16.74ms frame: the loop is idle 98.5% of it,
+waiting on vsync. Two savers were also fixed on their own terms — Raymarch Fractal
+**18.4 → 31.7 fps** and Flow Field **15.6 → 33.3 fps** at 6000×1200.
+
+Ruled out along the way, and worth recording so nobody re-investigates them:
+software rendering, the detection downscale (0.49ms, constant in source
+resolution), `resize()` forcing layout, and the capture service.
+
 
 #### Added
 
@@ -38,8 +68,11 @@ configured. See the README for what each sends and where.
   - **Raymarch Fractal** — penumbra-tracking soft shadows, ambient occlusion, a real
     environment used as both background and IBL source, orbit-trap colouring, and
     temporal accumulation that removes the crawling silhouette
-  - **Mandelbrot** — a genuinely unbounded dive by perturbation theory, instead of
-    stopping where double precision runs out
+  - **Julia Family** — Julia Set and Mandelbrot are now one saver: a continuous
+    dive through the Mandelbrot set with the corresponding Julia set following it
+    across the frame, so the wall shows the relationship between the two rather
+    than each in isolation. The earlier unbounded-dive work by perturbation
+    theory lives on inside it
   - **Reaction Diffusion** — lit as a relief rather than colour-mapped. Base hue now
     comes from a curated set, so the palette can no longer land on gold or amber
   - **Voronoi** — lit facets, cell count scaled to canvas area, and a bounded value
@@ -59,6 +92,8 @@ configured. See the README for what each sends and where.
   - **Moiré Interference** — fringes computed analytically from the difference term of
     the grating product, rather than left to emerge from sampling. The look no longer
     depends on pixel pitch, so it is identical on a laptop and on the wall
+- **The Dual/Single layout transition and input switch are animated**, and the
+  screensaver rotation now fades between savers instead of cutting
 - `shadercheck` structure baselines updated for six of those savers. Five moved
   **down** and one **up**: the check counts spatial high-frequency content rather than
   structure, so the old values were partly inflated by the very noise these rewrites
@@ -81,10 +116,16 @@ configured. See the README for what each sends and where.
   directory form, so the symlink slipped past
 - The release workflow staged only `VERSION` and `package.json`, silently discarding
   the `package-lock.json` half of every version bump
-
-#### Performance
-
+- The DVD logo was sized from the long axis, so it filled the 5:1 wall; it now
+  comes off the short axis
+- The `D` and `S` layout shortcuts were never wired up, and audio was paired by
+  device id rather than `groupId`
+- The dual-view dropdown columns overflowed the panel
 - No-signal references are stored at detection resolution rather than full frame
+
+---
+
+## Electron Version (v2.x)
 
 ### [2.13.0] - 2026-08-09
 
