@@ -47,6 +47,11 @@ const sample = (label, frames, seconds, width = 6000, height = 1200) =>
 const timed = (label, frames, seconds, preMs, drawMs) =>
   ({ label, frames, seconds, preMs, drawMs, width: 6000, height: 1200 })
 
+/** A sample carrying jank: worst single gap, late count, and their spacing. */
+const janky = (label, frames, seconds, worstMs, lateCount, latePeriodMs) =>
+  ({ label, frames, seconds, preMs: 0, drawMs: 0, worstMs, lateCount, latePeriodMs,
+     width: 6000, height: 1200 })
+
 describe('accumulateFrameStats', () => {
   it('turns frames over an interval into a rate', () => {
     const stats = accumulateFrameStats([sample('Plasma', 600, 10)], new Map())
@@ -155,12 +160,14 @@ describe('the timing split says where the frame went', () => {
     // 600 frames over 10s having spent 1200ms drawing is 2ms a frame.
     const stats = accumulateFrameStats([timed('Plasma', 600, 10, 300, 1200)], new Map())
     const body = formatFpsReport(stats)
+    // Table: saver fps work frame worst late every n size
     const row = body.split('\n').find(l => l.startsWith('Plasma')).split(/\s+/)
-    // saver fps draw pre work frame wait n size
     expect(Number(row[1])).toBeCloseTo(60, 1)   // fps
-    expect(Number(row[2])).toBeCloseTo(2.0, 2)  // draw
-    expect(Number(row[3])).toBeCloseTo(0.5, 2)  // pre
-    expect(Number(row[4])).toBeCloseTo(2.5, 2)  // work
+    expect(Number(row[2])).toBeCloseTo(2.5, 2)  // work = pre + draw
+    // draw and pre moved to a detail line, so the table stays readable on a terminal.
+    const detail = body.split('\n').find(l => l.trim().startsWith('Plasma') && l.includes('draw'))
+    expect(detail).toMatch(/draw 2\.00ms/)
+    expect(detail).toMatch(/pre 0\.50ms/)
   })
 
   it('reports the achieved frame interval and the wait left over', () => {
@@ -170,8 +177,9 @@ describe('the timing split says where the frame went', () => {
     const stats = accumulateFrameStats([timed('Plasma', 600, 10, 300, 1200)], new Map())
     const row = formatFpsReport(stats).split('\n')
       .find(l => l.startsWith('Plasma')).split(/\s+/)
-    expect(Number(row[5])).toBeCloseTo(16.67, 1)  // frame
-    expect(Number(row[6])).toBeCloseTo(14.17, 1)  // wait
+    expect(Number(row[3])).toBeCloseTo(16.67, 1)  // frame
+    // wait is frame - work, still stated in the header rather than a column.
+    expect(Number(row[3]) - Number(row[2])).toBeCloseTo(14.17, 1)
   })
 
   it('shows a loop that IS the bottleneck as almost no wait', () => {
@@ -183,9 +191,9 @@ describe('the timing split says where the frame went', () => {
     const stats = accumulateFrameStats([timed('Heavy', 450, 10, 0, 9450)], new Map())
     const row = formatFpsReport(stats).split('\n')
       .find(l => l.startsWith('Heavy')).split(/\s+/)
-    expect(Number(row[4])).toBeCloseTo(21, 0)   // work
-    expect(Number(row[5])).toBeCloseTo(22.2, 0) // frame
-    expect(Number(row[6])).toBeLessThan(2)      // wait
+    expect(Number(row[2])).toBeCloseTo(21, 0)   // work
+    expect(Number(row[3])).toBeCloseTo(22.2, 0) // frame
+    expect(Number(row[3]) - Number(row[2])).toBeLessThan(2) // wait
   })
 
   it('accumulates timing across intervals like the counts', () => {
@@ -196,9 +204,9 @@ describe('the timing split says where the frame went', () => {
     expect(v.drawMs).toBe(1800)
     expect(v.frames).toBe(1200)
     // 1800ms over 1200 frames = 1.5ms mean, not the mean of 2 and 1.
-    const row = formatFpsReport(stats).split('\n')
-      .find(l => l.startsWith('Plasma')).split(/\s+/)
-    expect(Number(row[2])).toBeCloseTo(1.5, 2)
+    const detail = formatFpsReport(stats).split('\n')
+      .find(l => l.trim().startsWith('Plasma') && l.includes('draw'))
+    expect(detail).toMatch(/draw 1\.50ms/)
   })
 
   it('tolerates samples with no timing, so an old runtime cannot break it', () => {
@@ -215,5 +223,75 @@ describe('the timing split says where the frame went', () => {
     const body = formatFpsReport(stats)
     expect(body).toContain('work = pre + draw')
     expect(body).toContain('wait = frame - work')
+  })
+})
+
+describe('jank the averages cannot show', () => {
+  // The reason these exist: #279 replaced min/max with the timing split, and a mean
+  // over 15s hides a dropped frame. Four dropped frames in a 15s window move the mean
+  // from 16.67ms to 16.74ms -- which is exactly what the wall reported while a
+  // periodic freeze was plainly visible on it.
+
+  it('keeps the WORST gap, never an average of gaps', () => {
+    // Averaging the worst case is how the last version lost the signal.
+    const stats = new Map()
+    accumulateFrameStats([janky('Plasma', 900, 15, 18, 1, 0)], stats)
+    accumulateFrameStats([janky('Plasma', 900, 15, 214, 8, 1900)], stats)
+    accumulateFrameStats([janky('Plasma', 900, 15, 20, 1, 0)], stats)
+    expect(stats.get('Plasma').worstMs).toBe(214)
+  })
+
+  it('totals late frames across windows', () => {
+    const stats = new Map()
+    accumulateFrameStats([janky('Plasma', 900, 15, 40, 7, 2000)], stats)
+    accumulateFrameStats([janky('Plasma', 900, 15, 40, 8, 2000)], stats)
+    expect(stats.get('Plasma').lateCount).toBe(15)
+  })
+
+  it('reports the spacing between late frames, which names the cause', () => {
+    // A cadence at ~1600ms is the detection cycle; ~5000 the board refresh; ~15000
+    // the sampler itself. The period is the diagnostic, not the count.
+    const stats = accumulateFrameStats(
+      [janky('Plasma', 900, 15, 210, 9, 1604)], new Map())
+    const row = formatFpsReport(stats).split('\n')
+      .find(l => l.startsWith('Plasma')).split(/\s+/)
+    // saver fps work frame worst late every n size
+    expect(Number(row[4])).toBeCloseTo(210, 0)   // worst
+    expect(Number(row[5])).toBe(9)               // late
+    expect(Number(row[6])).toBeCloseTo(1604, 0)  // every
+  })
+
+  it('shows a dash rather than a fake period when nothing was late', () => {
+    // A single late frame has no spacing, and printing 0 would read as "every 0ms".
+    const stats = accumulateFrameStats(
+      [janky('Plasma', 900, 15, 18, 0, 0)], new Map())
+    const row = formatFpsReport(stats).split('\n')
+      .find(l => l.startsWith('Plasma')).split(/\s+/)
+    expect(row[6]).toBe('-')
+  })
+
+  it('averages the period across windows that had one', () => {
+    // Windows with no late frames must not drag the mean toward zero.
+    const stats = new Map()
+    accumulateFrameStats([janky('Plasma', 900, 15, 200, 8, 1600)], stats)
+    accumulateFrameStats([janky('Plasma', 900, 15, 12, 0, 0)], stats)
+    accumulateFrameStats([janky('Plasma', 900, 15, 200, 8, 1620)], stats)
+    const row = formatFpsReport(stats).split('\n')
+      .find(l => l.startsWith('Plasma')).split(/\s+/)
+    expect(Number(row[6])).toBeCloseTo(1610, 0)
+  })
+
+  it('explains in the file what a cadence would mean', () => {
+    // Read on a wall by someone who did not write it, next to a number like 1604.
+    const body = formatFpsReport(accumulateFrameStats(
+      [janky('Plasma', 900, 15, 200, 8, 1600)], new Map()))
+    expect(body).toContain('1600 detection cycle')
+    expect(body).toContain('names the cause')
+  })
+
+  it('tolerates samples with no jank fields', () => {
+    const stats = accumulateFrameStats([sample('Plasma', 600, 10)], new Map())
+    expect(stats.get('Plasma').worstMs).toBe(0)
+    expect(() => formatFpsReport(stats)).not.toThrow()
   })
 })

@@ -232,12 +232,20 @@ export function sampleFrameCounters(now = performance.now()) {
       seconds,
       preMs: rec.preMs,
       drawMs: rec.drawMs,
+      worstMs: rec.worstMs,
+      lateCount: rec.lateCount,
+      // Mean ms between late frames, or 0 if fewer than two happened.
+      latePeriodMs: rec.lateGapCount ? rec.lateGapSum / rec.lateGapCount : 0,
       width: rec.canvas.width,
       height: rec.canvas.height,
     })
     rec.frames = 0
     rec.preMs = 0
     rec.drawMs = 0
+    rec.worstMs = 0
+    rec.lateCount = 0
+    rec.lateGapSum = 0
+    rec.lateGapCount = 0
     rec.since = now
   }
   return out
@@ -276,6 +284,15 @@ export function frameObserverCount() {
  * the consumer can use is the definition of waste.
  */
 const FRAME_OBSERVER_MIN_INTERVAL_MS = 1000
+
+/**
+ * How much longer than the running pace a frame gap has to be to count as late.
+ *
+ * 1.5x, so one skipped vsync at any refresh rate is caught: at 60Hz an ideal gap is
+ * 16.7ms and a single drop is 33.3ms, which is 2x. Anything under 1.5x is jitter
+ * rather than a dropped frame.
+ */
+export const LATE_FRAME_FACTOR = 1.5
 
 /**
  * Create a WebGL2 runtime bound to a canvas. Returns helpers for building
@@ -320,6 +337,31 @@ export function createGLRuntime(canvas, options = {}) {
     // which is not answerable from a frame count.
     preMs: 0,
     drawMs: 0,
+    // Jank, which the averages cannot show (#279 replaced min/max with the timing
+    // split, and a mean over 15s hides a dropped frame entirely: 4 dropped frames in
+    // a 15s window moves the mean from 16.67ms to 16.74ms).
+    //
+    // worstMs   the longest single gap between frames in this window
+    // lateCount frames whose gap exceeded LATE_FRAME_FACTOR x the window's own median
+    //           pace -- relative, so it works at 60Hz, 120Hz or on a struggling wall
+    //           without a hardcoded target
+    worstMs: 0,
+    lateCount: 0,
+    lastFrameAt: 0,
+    // Spacing between late frames, because the jank is reported as PERIODIC and the
+    // period is what names the culprit. Everything on a timer in this app has a known
+    // cadence:
+    //
+    //   1600ms  the detection cycle -- the only heavyweight thing left on the
+    //           renderer's main thread, and it copies a whole video frame
+    //   5000ms  the no-signal board's row refresh
+    //  15000ms  the frame-counter sample
+    //
+    // Two accumulators rather than a list of timestamps, so the memory is fixed no
+    // matter how long the window runs.
+    lateGapSum: 0,
+    lateGapCount: 0,
+    lastLateAt: 0,
   }
   pendingRuntimeLabel = null
 
@@ -500,6 +542,12 @@ export function createGLRuntime(canvas, options = {}) {
     counter.frames = 0
     counter.preMs = 0
     counter.drawMs = 0
+    counter.worstMs = 0
+    counter.lateCount = 0
+    counter.lateGapSum = 0
+    counter.lateGapCount = 0
+    counter.lastFrameAt = 0
+    counter.lastLateAt = 0
     counter.since = performance.now()
     liveRuntimes.add(counter)
     const loop = () => {
@@ -507,6 +555,27 @@ export function createGLRuntime(canvas, options = {}) {
       // ~30ns each that is under 10us per second at 60fps -- far below what it
       // measures, which is the only way instrumentation is honest.
       const tEnter = performance.now()
+      // Gap since the previous frame. Measured at the top, so it is the interval the
+      // loop actually achieved -- including anything that blocked it from outside
+      // this callback, which is the whole point.
+      if (counter.lastFrameAt) {
+        const gap = tEnter - counter.lastFrameAt
+        if (gap > counter.worstMs) counter.worstMs = gap
+        // The pace to compare against is this window's own mean so far, which needs
+        // at least a couple of frames to mean anything.
+        if (counter.frames > 2) {
+          const pace = (tEnter - counter.since) / counter.frames
+          if (gap > pace * LATE_FRAME_FACTOR) {
+            counter.lateCount++
+            if (counter.lastLateAt) {
+              counter.lateGapSum += tEnter - counter.lastLateAt
+              counter.lateGapCount++
+            }
+            counter.lastLateAt = tEnter
+          }
+        }
+      }
+      counter.lastFrameAt = tEnter
       resize()
       const tDrawStart = performance.now()
       const time = (tDrawStart - startTime) / 1000
