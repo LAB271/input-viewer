@@ -1032,6 +1032,45 @@ function stopNoSignalBoard(side, overlay) {
   overlay.classList.remove('board-active')
 }
 
+/**
+ * Start or stop each side's board so that exactly the visible ones are running.
+ *
+ * A board is worth running only when its overlay is the top thing on that side. It
+ * is not, once the screensaver is up: #dvd-overlay is z-index 25 with an opaque
+ * black background over the no-signal overlay's 10. Nothing used to stop them, so
+ * both boards kept rendering at full rate behind it -- two WebGL2 contexts and two
+ * full frame loops drawing something nobody can see.
+ *
+ * That was visible in the frame-rate report and I read past it: three runtimes at
+ * once, two of them invisible. The instrument said so before anybody noticed.
+ *
+ * Called from every transition that changes what is on top, so the four paths
+ * cannot disagree: signal lost, signal restored, screensaver arriving, screensaver
+ * leaving.
+ */
+function boardShouldRun (side, saverUp = isScreensaverRunning()) {
+  // A board earns its frame loop only while its overlay is the top thing on that
+  // side. Split out from syncNoSignalBoards so the rule is testable without a
+  // WebGL2 context -- starting a real board needs one, the decision does not.
+  return Boolean(state.noSignalState[side]) && !saverUp
+}
+
+function syncNoSignalBoards () {
+  const saverUp = isScreensaverRunning()
+  for (const side of ['left', 'right']) {
+    const feed = side === 'left' ? elements.leftFeed : elements.rightFeed
+    const overlay = feed?.querySelector('.no-signal-overlay')
+    if (!overlay) continue
+    const wantRunning = boardShouldRun(side, saverUp)
+    if (wantRunning) {
+      startNoSignalBoard(side, overlay)
+    } else {
+      stopNoSignalBoard(side, overlay)
+    }
+  }
+  updateBoardRefreshTimer()
+}
+
 function showNoSignal(side) {
   const feed = side === 'left' ? elements.leftFeed : elements.rightFeed
   const overlay = feed.querySelector('.no-signal-overlay')
@@ -1043,7 +1082,10 @@ function showNoSignal(side) {
   if (state.noSignalSince[side] === null) {
     state.noSignalSince[side] = performance.now()
   }
-  startNoSignalBoard(side, overlay)
+  // Not startNoSignalBoard directly: if the screensaver is already up, this side's
+  // board must NOT start. Reachable -- the second side can drop while a saver from
+  // the first is running.
+  syncNoSignalBoards()
 }
 
 function hideNoSignal(side) {
@@ -1274,6 +1316,9 @@ function showDvdScreensaver() {
   const name = revealScreensaver(() => startScreensaver()) // random pick each activation
   console.log(`[Screensaver] Activated: ${name}`)
   startScreensaverRotation()
+  // The boards are now behind an opaque overlay; stop them. After the saver has
+  // started, so isScreensaverRunning() is already true.
+  syncNoSignalBoards()
 }
 
 /**
@@ -1366,6 +1411,11 @@ function hideDvdScreensaver() {
 
   dismissScreensaver(() => {
     stopScreensaver()
+
+    // The saver is gone, so a side still without signal gets its board back. After
+    // stopScreensaver(), so isScreensaverRunning() reads false. Reachable via V
+    // while still dark, not only via signal returning.
+    syncNoSignalBoards()
 
     // Stop driving the room lighting (#59). By default this sends nothing at all:
     // the fixtures keep their last colour, so a room with people in it does not
@@ -3733,6 +3783,8 @@ export {
   hideNoSignal,
   formatDowntime,
   boardRowsFor,
+  boardShouldRun,
+  syncNoSignalBoards,
   accumulateFrameStats,
   formatFpsReport,
   syncArtnetFrameObserver,
