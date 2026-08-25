@@ -230,10 +230,14 @@ export function sampleFrameCounters(now = performance.now()) {
       label: rec.label,
       frames: rec.frames,
       seconds,
+      preMs: rec.preMs,
+      drawMs: rec.drawMs,
       width: rec.canvas.width,
       height: rec.canvas.height,
     })
     rec.frames = 0
+    rec.preMs = 0
+    rec.drawMs = 0
     rec.since = now
   }
   return out
@@ -303,6 +307,19 @@ export function createGLRuntime(canvas, options = {}) {
     frames: 0,
     since: 0,
     canvas,
+    // Accumulated work per frame, split so the report can say WHERE the time goes
+    // (#271 said only how many frames there were).
+    //
+    //   preMs   the runtime's own work before handing over -- resize(), which
+    //           reads clientWidth/clientHeight and so can force a layout
+    //   drawMs  the saver's onFrame callback: its actual drawing
+    //
+    // Anything left between (work) and (1000/fps) is time the loop spent WAITING --
+    // on vsync, the compositor or the GPU. That difference is the point: it
+    // distinguishes "our JS is slow" from "we are not the bottleneck at all",
+    // which is not answerable from a frame count.
+    preMs: 0,
+    drawMs: 0,
   }
   pendingRuntimeLabel = null
 
@@ -481,17 +498,27 @@ export function createGLRuntime(canvas, options = {}) {
     // Registered on start rather than on create, so a runtime that is built and
     // never started does not appear as a 0 fps entry.
     counter.frames = 0
+    counter.preMs = 0
+    counter.drawMs = 0
     counter.since = performance.now()
     liveRuntimes.add(counter)
     const loop = () => {
+      // Three clock reads per frame, one of which the loop already needed. At
+      // ~30ns each that is under 10us per second at 60fps -- far below what it
+      // measures, which is the only way instrumentation is honest.
+      const tEnter = performance.now()
       resize()
-      const time = (performance.now() - startTime) / 1000
+      const tDrawStart = performance.now()
+      const time = (tDrawStart - startTime) / 1000
       // Clamp so a stall (tab hidden, GPU hitch, first frame) cannot advance a
       // simulation by a huge step and blow it up. Every simulation saver used
       // to hand-roll this identical line; now the runtime owns it.
       dt = Math.min(time - lastTime, MAX_DT) || FALLBACK_DT
       lastTime = time
       if (onFrame) onFrame(time, frame, gl, runtime)
+      const tDrawEnd = performance.now()
+      counter.preMs += tDrawStart - tEnter
+      counter.drawMs += tDrawEnd - tDrawStart
       // Frame observers (issue #59): Art-Net reactive mode needs the rendered
       // pixels, and this is the only point that is guaranteed to be INSIDE the
       // frame. Without preserveDrawingBuffer the default framebuffer's contents

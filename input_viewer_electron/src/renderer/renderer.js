@@ -1623,6 +1623,8 @@ function accumulateFrameStats (samples, stats = fpsStats) {
         samples: 1,
         frames: s.frames,
         seconds: s.seconds,
+        preMs: s.preMs ?? 0,
+        drawMs: s.drawMs ?? 0,
         min: fps,
         max: fps,
         last: fps,
@@ -1633,6 +1635,8 @@ function accumulateFrameStats (samples, stats = fpsStats) {
     prev.samples++
     prev.frames += s.frames
     prev.seconds += s.seconds
+    prev.preMs += s.preMs ?? 0
+    prev.drawMs += s.drawMs ?? 0
     prev.min = Math.min(prev.min, fps)
     prev.max = Math.max(prev.max, fps)
     prev.last = fps
@@ -1651,7 +1655,15 @@ function accumulateFrameStats (samples, stats = fpsStats) {
  */
 function formatFpsReport (stats = fpsStats) {
   const rows = [...stats.entries()]
-    .map(([label, v]) => ({ label, mean: v.frames / v.seconds, ...v }))
+    .map(([label, v]) => {
+      const mean = v.frames / v.seconds
+      // Per-frame averages. `frame` is the interval the loop actually achieved;
+      // `work` is what we spent inside it. The remainder is `wait`.
+      const pre = v.frames ? v.preMs / v.frames : 0
+      const draw = v.frames ? v.drawMs / v.frames : 0
+      const frame = mean > 0 ? 1000 / mean : 0
+      return { label, mean, pre, draw, work: pre + draw, frame, ...v }
+    })
     .sort((a, b) => a.mean - b.mean)
 
   const lines = []
@@ -1661,16 +1673,24 @@ function formatFpsReport (stats = fpsStats) {
     lines.push('No frames counted yet.')
     return lines.join('\n')
   }
+  // `wait` is the column that matters: work well under frame means the loop is
+  // not the bottleneck and the time is going to vsync, the compositor or the GPU.
+  lines.push('ms columns are per frame. work = pre + draw; wait = frame - work.')
+  lines.push('pre is the runtime before handing over (resize); draw is the saver.')
+  lines.push('')
   lines.push(
-    'saver'.padEnd(26) + 'mean'.padStart(7) + 'min'.padStart(7) +
-    'max'.padStart(7) + 'last'.padStart(7) + '  n'.padStart(4) + '  size')
+    'saver'.padEnd(24) + 'fps'.padStart(6) + 'draw'.padStart(7) +
+    'pre'.padStart(7) + 'work'.padStart(7) + 'frame'.padStart(7) +
+    'wait'.padStart(7) + 'n'.padStart(4) + '  size')
   for (const r of rows) {
     lines.push(
-      r.label.slice(0, 25).padEnd(26) +
-      r.mean.toFixed(1).padStart(7) +
-      r.min.toFixed(1).padStart(7) +
-      r.max.toFixed(1).padStart(7) +
-      r.last.toFixed(1).padStart(7) +
+      r.label.slice(0, 23).padEnd(24) +
+      r.mean.toFixed(1).padStart(6) +
+      r.draw.toFixed(2).padStart(7) +
+      r.pre.toFixed(2).padStart(7) +
+      r.work.toFixed(2).padStart(7) +
+      r.frame.toFixed(2).padStart(7) +
+      (r.frame - r.work).toFixed(2).padStart(7) +
       String(r.samples).padStart(4) + '  ' + r.size)
   }
   return lines.join('\n')
