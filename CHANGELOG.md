@@ -9,6 +9,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Electron Version (v3.x)
 
+### [3.2.0] - 2026-08-26
+
+The Art-Net lighting now follows *where* things are on the wall, not just their
+average colour.
+
+#### Added
+
+- **Spatial mode** (`artnetTarget: "spatial"`, or per screensaver). Maps the
+  wall's colours onto the fixtures nearest them: a green column on the left of
+  the picture lights the left of the room. The videowall runs along one edge, so
+  a strip at room-x 4 m sits under the part of the picture at the same horizontal
+  position. Each strip's own pixels are interpolated along its length via
+  `POST /strips/{name}/pixels`, so a one-metre horizontal strip carries a real
+  gradient — and costs the same single request a flat colour would
+
+  Two constraints shape it. There is **no bulk write**, so each update sends only
+  the strips whose colour moved perceptibly, most-changed first, capped at eight:
+  a screensaver with its action in one corner spends the whole budget there, and
+  a near-static one stops sending. And the mapping is normalised against **the
+  strips' own extent**, read from `GET /layout` — this rig spans x 1.5–10.5 m of
+  a 12 m room, so using the room width would map the outer eighth of the picture
+  at each side onto bare floor
+
+  Columns are averaged luminance-weighted rather than flat. Most screensavers are
+  mostly black, and a flat mean pulls every column toward black and leaves the
+  room a uniform dim wash — the failure the feature exists to avoid
+
+- **Default screensaver pairings**: Plasma drives the relay's `plasma` field,
+  Metaballs drives `blobs`, Wave Tank drives `ripple`. Only pairings where the
+  effect genuinely mirrors the screen; a mismatched effect puts the room out of
+  step with the wall, which is worse than the dominant colour. Choose *Reactive*
+  to opt out
+
+#### Fixed
+
+- **Every effect was sent the spot's parameters.** Each effect on the relay
+  declares its own set and the relay ignores anything else — silently, with a
+  200. `effect:plasma`, which takes `scale`/`speed`/`brightness` and no colour at
+  all, received seven keys it had no use for and ran at its defaults forever. It
+  looked wired up and was not, and nothing anywhere failed. Each of the seven
+  field effects now gets the parameters it actually accepts, driven from the
+  frame; the ten the relay cannot nudge are started once and left alone rather
+  than re-poked every second
+- Choosing **Reactive** for a paired screensaver did nothing. The settings list
+  stores Reactive by deleting the entry, which for a paired saver fell straight
+  back through to the pairing — and the dropdown read `Reactive` while the effect
+  was running, stating the opposite of what the room was doing
+- A failed spatial write was recorded as the strip's current colour, which would
+  have left that strip stuck on whatever it was showing, permanently skipped as
+  unchanged while every other strip tracked the wall
+
 ### [3.1.0] - 2026-08-25
 
 Art-Net grows up: the lighting is configurable from the UI, can differ per
