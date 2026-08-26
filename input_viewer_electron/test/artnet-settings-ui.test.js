@@ -36,7 +36,7 @@ globalThis.window.electronAPI = {
 
 const {
   state, elements, saveSettings, updateArtnetUI, toggleArtnet,
-  setArtnetTarget, setArtnetSpotDepth, getDefaultSettings
+  setArtnetTarget, setArtnetSpotDepth, setArtnetSaverMode, getDefaultSettings
 } = await import('../src/renderer/renderer.js')
 
 /** Every artnet* key the main process defines, read from its source. */
@@ -215,5 +215,46 @@ describe('field values', () => {
     updateArtnetUI()
     expect(elements.artnetUrl.value).toBe('https://relay.example')
     expect(elements.artnetReleaseScene.value).toBe('')
+  })
+})
+
+describe('the per-saver list and the built-in pairings', () => {
+  const rowFor = (saver) => [...elements.artnetSaverList.querySelectorAll('.artnet-saver-row')]
+    .find(r => r.querySelector('.artnet-saver-name')?.textContent === saver)
+
+  it('shows the pairing a saver is actually running, not Reactive', () => {
+    // Plasma has a built-in pairing and no entry in the map, so it IS running the
+    // plasma effect. A dropdown reading 'Reactive' would state the opposite of
+    // what the room is doing.
+    state.settings.artnetSceneBySaver = {}
+    updateArtnetUI()
+    expect(rowFor('Plasma').querySelector('select').value).toBe('effect:plasma')
+    expect(rowFor('Frost').querySelector('select').value).toBe('reactive')
+  })
+
+  it('WRITES reactive for a paired saver, so choosing it can take effect', () => {
+    // Reactive is normally stored by deleting the key. For a paired saver that
+    // would fall straight back through to the pairing, and picking Reactive would
+    // appear to do nothing.
+    state.settings.artnetSceneBySaver = {}
+    setArtnetSaverMode('Plasma', 'reactive')
+    expect(state.settings.artnetSceneBySaver.Plasma).toBe('reactive')
+
+    updateArtnetUI()
+    expect(rowFor('Plasma').querySelector('select').value).toBe('reactive')
+  })
+
+  it('still stores an unpaired saver’s reactive as an absent key', () => {
+    state.settings.artnetSceneBySaver = { Frost: 'off' }
+    setArtnetSaverMode('Frost', 'reactive')
+    expect('Frost' in state.settings.artnetSceneBySaver).toBe(false)
+  })
+
+  it('renders a row for every screensaver', () => {
+    state.settings.artnetSceneBySaver = {}
+    updateArtnetUI()
+    const rows = elements.artnetSaverList.querySelectorAll('.artnet-saver-row')
+    expect(rows.length).toBeGreaterThanOrEqual(28)
+    expect(rowFor('Matrix Rain')).toBeDefined()
   })
 })

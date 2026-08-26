@@ -45,7 +45,7 @@ import {
   listScreensavers
 } from './screensavers/registry.js'
 import { installWeatherSource } from './screensavers/weather-source.js'
-import { installArtnetSync, getArtnetSync } from './screensavers/artnet-sync.js'
+import { installArtnetSync, getArtnetSync, DEFAULT_SAVER_MODES } from './screensavers/artnet-sync.js'
 import { observeFrames, sampleFrameCounters, setNextRuntimeLabel } from './screensavers/gl-base.js'
 
 // Imported directly rather than through the registry: the split-flap board is
@@ -2646,7 +2646,10 @@ function renderArtnetSaverList() {
       ...artnetCatalogue.scenes.map(n => [`scene:${n}`, `Scene: ${n}`]),
       ...artnetCatalogue.effects.map(n => [`effect:${n}`, `Effect: ${n}`])
     ]
-    const current = mapping[saver] || 'reactive'
+    // The effective mode, not the raw entry. A saver with a built-in pairing and
+    // no entry is running that effect, so showing 'Reactive' here would state the
+    // opposite of what the room is doing.
+    const current = mapping[saver] ?? (DEFAULT_SAVER_MODES[saver] || 'reactive')
     if (!options.some(([v]) => v === current)) options.push([current, `${current} (configured)`])
     for (const extra of configured) {
       if (!options.some(([v]) => v === extra)) options.push([extra, `${extra} (configured)`])
@@ -2674,7 +2677,11 @@ function renderArtnetSaverList() {
  */
 function setArtnetSaverMode(saver, mode) {
   const mapping = { ...(state.settings.artnetSceneBySaver || {}) }
-  if (mode === 'reactive') delete mapping[saver]
+  // 'reactive' is normally stored as an absent key, so a mapping only ever holds
+  // real decisions. But a saver with a built-in pairing needs the entry written:
+  // deleting it would fall straight back through to the pairing, and choosing
+  // Reactive would appear to do nothing at all.
+  if (mode === 'reactive' && !DEFAULT_SAVER_MODES[saver]) delete mapping[saver]
   else mapping[saver] = mode
   state.settings.artnetSceneBySaver = mapping
   saveSettings()
@@ -4161,6 +4168,7 @@ export {
   saveSettings,
   updateArtnetUI,
   toggleArtnet,
+  setArtnetSaverMode,
   setArtnetTarget,
   setArtnetSpotDepth
 }

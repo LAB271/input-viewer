@@ -216,6 +216,19 @@ display name:
 - **`effect:<name>`** — run that effect, overriding `artnetTarget`
 - **`off`** — leave the room alone for this screensaver
 
+Three screensavers pair with a matching effect out of the box — **Plasma** drives
+the relay's `plasma` field, **Metaballs** drives `blobs`, **Wave Tank** drives
+`ripple`. Choose *Reactive* for any of them to opt out. Only pairings where the
+effect genuinely mirrors the screen are built in; a mismatched effect puts the
+room out of step with the wall, which is worse than the dominant colour.
+
+Each effect is driven with **its own parameters**, not one shared shape. `plasma`
+and `aurora` generate their own colour and take `scale`/`speed`/`brightness`;
+`spot` and `ripple` take a position; `blobs` takes a count and size. Effects the
+relay cannot nudge (`fire`, `police`, `sparkle`, `chase`, …) are started once and
+left alone, since changing their parameters means restarting them and resetting
+their animation.
+
 **The room is put back when the screensaver ends.** On activation the app reads
 `GET /status` and remembers the per-strip colours, plus any effect that was
 already running; when the signal returns it writes that back. So plugging a
