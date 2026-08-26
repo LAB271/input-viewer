@@ -2642,6 +2642,7 @@ function renderArtnetSaverList() {
     const select = document.createElement('select')
     const options = [
       ['reactive', 'Reactive'],
+      ['spatial', 'Spatial — colours follow the wall'],
       ['off', 'Leave lights alone'],
       ...artnetCatalogue.scenes.map(n => [`scene:${n}`, `Scene: ${n}`]),
       ...artnetCatalogue.effects.map(n => [`effect:${n}`, `Effect: ${n}`])

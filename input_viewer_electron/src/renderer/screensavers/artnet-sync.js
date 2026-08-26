@@ -329,6 +329,8 @@ export const DEFAULT_SAVER_MODES = Object.freeze({
  *   `artnetTarget`. The default for all but the few savers in
  *   DEFAULT_SAVER_MODES, which pair with a matching effect.
  * - `'off'` -- leave the room alone entirely for this saver.
+ * - `'spatial'` -- map the wall's colours onto the fixtures nearest them, so a
+ *   green column on the left lights the left of the room. See columnProfile.
  * - `'scene:<name>'` -- post that scene once when the saver starts.
  * - `'effect:<name>'` -- run that effect for this saver, overriding the global
  *   target.
@@ -346,6 +348,7 @@ export function modeForSaver(saver, bySaver) {
   // out has to be possible.
   const raw = String(configured || 'reactive').trim()
   if (raw === 'off') return { kind: 'off', name: '' }
+  if (raw === 'spatial') return { kind: 'spatial', name: '' }
   if (raw.startsWith('scene:')) {
     const name = raw.slice('scene:'.length).trim()
     if (name) return { kind: 'scene', name }
@@ -403,6 +406,17 @@ export function summariseState(status) {
   return { strips, effect, uniform }
 }
 
+/** `GET /layout` -- where the strips physically are, for spatial mode. */
+export function layoutEndpoint(baseUrl) {
+  return `${String(baseUrl || '').replace(/\/+$/, '')}/layout`
+}
+
+/** `POST /strips/{name}/pixels` -- per-pixel colours along one strip. */
+export function stripPixelsEndpoint(baseUrl, name) {
+  const base = String(baseUrl || '').replace(/\/+$/, '')
+  return `${base}/strips/${encodeURIComponent(name)}/pixels`
+}
+
 /** `GET /status` -- the room's current per-strip colours and running effect. */
 export function statusEndpoint(baseUrl) {
   return `${String(baseUrl || '').replace(/\/+$/, '')}/status`
@@ -418,6 +432,208 @@ export function sceneEndpoint(baseUrl, name) {
 export function stripEndpoint(baseUrl, name) {
   const base = String(baseUrl || '').replace(/\/+$/, '')
   return `${base}/strips/${encodeURIComponent(name)}`
+}
+
+/**
+ * Spatial mode: put the wall's colours on the fixtures nearest them.
+ *
+ * The reactive modes reduce the whole frame to one colour, which throws away the
+ * thing that makes several screensavers worth watching -- Matrix Rain's green
+ * columns, a dive's hot centre against cold edges, Aurora's bands. The videowall
+ * runs along one edge of the room, so a strip at room-x 4 m sits under the part
+ * of the picture at the same horizontal position, and can show what is there.
+ *
+ * Only the horizontal axis is mapped, for the reason given at DEFAULT_SPOT_DEPTH:
+ * screen-y has no counterpart in room depth, and inventing one looks like a
+ * wiring fault. A strip's own 8 pixels are interpolated along its length, so a
+ * one-metre horizontal strip shows a real gradient rather than an average.
+ *
+ * Cost is the constraint. There is no bulk write -- 40 strips means 40 POSTs --
+ * and this app has already cost the wall 40x once by being casual about
+ * per-frame work. So each tick sends only the strips whose colour has actually
+ * moved, most-changed first, up to a hard cap. A frame with action in one corner
+ * spends its whole budget there instead of repainting 39 unchanged strips.
+ */
+
+/** Strips written per update, at most. 40 POSTs a second is not an option. */
+export const SPATIAL_MAX_WRITES = 8
+
+/**
+ * Ignore a strip whose target colour has moved less than this, per channel.
+ *
+ * Slightly above the point where a change is visible on a diffuse fixture, so a
+ * near-static screensaver settles and stops consuming the write budget entirely.
+ */
+export const SPATIAL_CHANGE_THRESHOLD = 6
+
+/** Fade asked of each strip. Longer than the refresh so motion stays continuous. */
+export const SPATIAL_TRANSITION_MS = 1200
+
+/**
+ * Average colour of each column of the sample grid, luminance-weighted.
+ *
+ * Weighted rather than a plain mean because a column is mostly dark in most
+ * screensavers: averaging four tiles flat would pull every column toward black
+ * and leave the room a uniform dim wash, which is the failure the whole feature
+ * exists to avoid.
+ *
+ * @param {Uint8Array} rgba packed RGBA from the sample grid
+ * @param {{tile:number,tilesX:number,tilesY:number}} [grid]
+ * @returns {Array<{r:number,g:number,b:number}>} one entry per column, left to right
+ */
+export function columnProfile(rgba, grid = SAMPLE_GRID) {
+  const { tile, tilesX, tilesY } = grid
+  const perTile = tile * tile * 4
+  const out = []
+
+  for (let tx = 0; tx < tilesX; tx++) {
+    let r = 0, g = 0, b = 0, wsum = 0
+    for (let ty = 0; ty < tilesY; ty++) {
+      const base = (ty * tilesX + tx) * perTile
+      if (base + perTile > rgba.length) continue
+      let tr = 0, tg = 0, tb = 0
+      for (let i = base; i < base + perTile; i += 4) {
+        tr += rgba[i]; tg += rgba[i + 1]; tb += rgba[i + 2]
+      }
+      const n = tile * tile
+      tr /= n; tg /= n; tb /= n
+      const lum = (0.2126 * tr + 0.7152 * tg + 0.0722 * tb) / 255
+      const w = lum + 0.02   // a floor, so an all-black column still averages
+      r += tr * w; g += tg * w; b += tb * w; wsum += w
+    }
+    out.push(wsum > 0
+      ? { r: Math.round(r / wsum), g: Math.round(g / wsum), b: Math.round(b / wsum) }
+      : { r: 0, g: 0, b: 0 })
+  }
+  return out
+}
+
+/**
+ * Sample a column profile at a fractional horizontal position, interpolated.
+ *
+ * Interpolated rather than nearest-column because eight columns across a 12 m
+ * room is one sample every 1.5 m: picking the nearest would step visibly from
+ * fixture to fixture where the picture is smooth.
+ *
+ * @param {Array<{r,g,b}>} profile
+ * @param {number} fx 0..1 across the frame
+ */
+export function sampleProfile(profile, fx) {
+  if (!profile.length) return { r: 0, g: 0, b: 0 }
+  // Column centres sit at (i + 0.5) / n, so the usable range between the outer
+  // centres is [0.5/n, 1 - 0.5/n]; outside it, hold the end column.
+  //
+  // No clamp on fx: the index clamping below already collapses anything outside
+  // the range onto the end column, from both sides, whatever t works out to. An
+  // extra clamp here looked like it guarded the edges and guarded nothing.
+  const pos = fx * profile.length - 0.5
+  const i0 = Math.floor(pos)
+  const t = pos - i0
+  const a = profile[Math.max(0, Math.min(profile.length - 1, i0))]
+  const b = profile[Math.max(0, Math.min(profile.length - 1, i0 + 1))]
+  return {
+    r: Math.round(a.r + (b.r - a.r) * t),
+    g: Math.round(a.g + (b.g - a.g) * t),
+    b: Math.round(a.b + (b.b - a.b) * t)
+  }
+}
+
+/**
+ * The horizontal span the fixtures actually occupy.
+ *
+ * Normalising against the room's full width would waste the frame: this rig
+ * spans x 1.5..10.5 of a 12 m room, so the outer eighth of the picture at each
+ * side would map onto bare floor and never be seen. Measured from the layout
+ * rather than assumed, because it is a property of where somebody hung the
+ * strips.
+ *
+ * @param {Array<object>} strips layout entries with x1/x2
+ * @returns {{min:number, max:number}|null}
+ */
+export function stripExtent(strips) {
+  let min = Infinity, max = -Infinity
+  for (const st of strips || []) {
+    for (const x of [st.x1, st.x2, st.x]) {
+      if (typeof x !== 'number' || !Number.isFinite(x)) continue
+      if (x < min) min = x
+      if (x > max) max = x
+    }
+  }
+  if (!Number.isFinite(min) || !Number.isFinite(max) || max - min < 1e-6) return null
+  return { min, max }
+}
+
+/**
+ * The pixel colours for one strip, sampled along its own length.
+ *
+ * Interpolated from x1 to x2, not from min to max, so the wiring direction is
+ * respected: `angle: 180` gives x1 > x2, and pixel 1 belongs at x1. Reversing
+ * that would mirror the gradient on half the rig -- which, in a room, reads as
+ * one strip being wired backwards rather than as a bug here.
+ *
+ * @param {object} strip layout entry
+ * @param {Array<{r,g,b}>} profile
+ * @param {{min:number,max:number}} extent
+ * @returns {number[][]} one [r,g,b] per pixel, pixel 1 first
+ */
+export function stripGradient(strip, profile, extent) {
+  const n = Math.max(1, strip.pixels || 1)
+  const span = extent.max - extent.min
+  const x1 = typeof strip.x1 === 'number' ? strip.x1 : strip.x
+  const x2 = typeof strip.x2 === 'number' ? strip.x2 : strip.x
+  const out = []
+  for (let i = 0; i < n; i++) {
+    // Pixel centres, so a strip's ends are not both pinned to its extremes.
+    const along = n === 1 ? 0.5 : (i + 0.5) / n
+    const x = x1 + (x2 - x1) * along
+    const c = sampleProfile(profile, (x - extent.min) / span)
+    out.push([c.r, c.g, c.b])
+  }
+  return out
+}
+
+/**
+ * Decide which strips to write this tick.
+ *
+ * Returns the most-changed strips first, capped, having dropped everything that
+ * has not moved perceptibly since it was last written. That is what keeps a
+ * 40-strip rig inside a request budget without giving up responsiveness where it
+ * matters: a screensaver with all its action in one place spends the whole
+ * budget there.
+ *
+ * @param {Array<object>} strips layout entries
+ * @param {Array<{r,g,b}>} profile
+ * @param {{min:number,max:number}} extent
+ * @param {Map<string, number[][]>} lastSent previous pixels per strip name
+ * @param {number} [max]
+ * @param {number} [threshold]
+ * @returns {Array<{name: string, pixels: number[][], change: number}>}
+ */
+export function spatialPlan(strips, profile, extent, lastSent,
+  max = SPATIAL_MAX_WRITES, threshold = SPATIAL_CHANGE_THRESHOLD) {
+  const candidates = []
+  for (const st of strips) {
+    if (!st || typeof st.name !== 'string') continue
+    const pixels = stripGradient(st, profile, extent)
+    const prev = lastSent.get(st.name)
+    let change = Infinity
+    if (prev && prev.length === pixels.length) {
+      change = 0
+      for (let i = 0; i < pixels.length; i++) {
+        for (let c = 0; c < 3; c++) {
+          const d = Math.abs(pixels[i][c] - prev[i][c])
+          if (d > change) change = d
+        }
+      }
+    }
+    if (change < threshold) continue
+    candidates.push({ name: st.name, pixels, change })
+  }
+  // Most-changed first. A stable tie-break by name keeps the order deterministic
+  // so a test can assert it, and so a rig sitting at a fixed picture does not
+  // shuffle which strips it refreshes.
+  candidates.sort((a, b) => b.change - a.change || a.name.localeCompare(b.name))
+  return candidates.slice(0, max)
 }
 
 /**
@@ -643,6 +859,7 @@ export function createArtnetSync(options) {
   let sent = 0
   let lastColour = null
   let lastSpot = null
+  let lastSpatial = null
   // The room's state before we took it over, and the saver currently driving it.
   let priorState = null
   let activeSaver = null
@@ -654,6 +871,12 @@ export function createArtnetSync(options) {
   // a fresh POST /effects/aurora, and a boolean would report "already running"
   // and send a /field/params nudge that aurora never receives.
   let runningEffect = null
+  // Spatial mode: the rig's geometry, and what was last written to each strip.
+  // Cached because the layout is a property of the room, not of the frame -- it
+  // is fetched once and only changes when somebody moves a fixture.
+  let layout = null
+  let layoutFailed = false
+  const lastPixels = new Map()
 
   function backoffUntil() {
     if (failures === 0) return 0
@@ -750,6 +973,41 @@ export function createArtnetSync(options) {
   }
 
   /**
+   * Write this frame's colours onto the strips nearest them.
+   *
+   * Sequential, and capped by spatialPlan. Firing forty POSTs at once would put
+   * a burst on a relay that runs a DMX output loop, and there is no deadline
+   * here worth that -- the next frame sample is a second away.
+   */
+  async function sendSpatial(rgba, cfg) {
+    if (!layout) {
+      // One attempt per activation. Retrying a missing layout every second would
+      // be a request a second forever against a relay that has already said no.
+      if (layoutFailed) return
+      const body = await get(layoutEndpoint(cfg.url))
+      const strips = body && Array.isArray(body.strips) ? body.strips : null
+      const extent = strips && stripExtent(strips)
+      if (!strips || !extent) { layoutFailed = true; return }
+      layout = { strips, extent }
+    }
+
+    const profile = columnProfile(rgba)
+    const plan = spatialPlan(layout.strips, profile, layout.extent, lastPixels)
+    lastSpatial = { written: plan.length, columns: profile.length }
+    for (const item of plan) {
+      const ok = await post(stripPixelsEndpoint(cfg.url, item.name), {
+        pixels: item.pixels,
+        brightness: cfg.maxBrightness,
+        transition_ms: SPATIAL_TRANSITION_MS
+      })
+      // Only remember what actually landed, so a failed write is retried rather
+      // than being treated as the strip's current colour forever.
+      if (ok) lastPixels.set(item.name, item.pixels)
+      else break
+    }
+  }
+
+  /**
    * Whether the given mode results in an effect running.
    *
    * Not simply `kind === 'effect'`: a reactive saver inherits the global
@@ -804,6 +1062,14 @@ export function createArtnetSync(options) {
       lastSentAt = t
       inFlight = true
       sent++
+
+      // The global target can select spatial too, for installs that want it
+      // everywhere rather than per screensaver.
+      if (activeMode.kind === 'spatial' ||
+          (activeMode.kind === 'reactive' && cfg.target === 'spatial')) {
+        sendSpatial(rgba, cfg).finally(() => { inFlight = false })
+        return
+      }
 
       const effect = activeMode.kind === 'effect'
         ? activeMode.name
@@ -935,6 +1201,9 @@ export function createArtnetSync(options) {
       const wasRunning = Boolean(runningEffect)
       const snapshot = priorState
       runningEffect = null
+      // Forget what was written, or the next activation would think the strips
+      // already hold this frame's colours and skip them as unchanged.
+      lastPixels.clear()
       priorState = null
       activeSaver = null
       activeMode = { kind: 'reactive', name: '' }
@@ -988,6 +1257,7 @@ export function createArtnetSync(options) {
         runningEffect,
         activeSaver,
         activeMode: activeMode.kind,
+        lastSpatial,
         hasPriorState: Boolean(priorState),
         nextEligibleAt: Math.max(lastSentAt + SEND_INTERVAL_MS, backoffUntil())
       }
