@@ -194,6 +194,29 @@ Operational notes:
   can be put back afterwards, and to list the scene names for the settings
   dropdowns.
 
+#### Spatial mode
+
+`artnetTarget: "spatial"`, or `spatial` for one screensaver, maps the wall's
+colours onto the fixtures nearest them: a green column on the left of the picture
+lights the left of the room. The videowall runs along one edge, so a strip at
+room-x 4 m sits under the part of the picture at the same horizontal position and
+shows what is there. Each strip's own pixels are interpolated along its length,
+so a one-metre horizontal strip carries a real gradient rather than an average.
+
+Only the horizontal axis is mapped, for the same reason as **Spot mode** below —
+screen-y has no counterpart in room depth.
+
+Two things worth knowing about how it stays cheap:
+
+- **There is no bulk write.** 40 strips means 40 POSTs, so each update sends only
+  the strips whose colour has actually moved, most-changed first, capped at 8. A
+  screensaver with all its action in one corner spends the whole budget there
+  instead of repainting 39 unchanged strips, and a near-static one stops sending
+  entirely.
+- **The rig's own extent sets the mapping**, read from `GET /layout`. This room's
+  strips span x 1.5–10.5 m of a 12 m room; normalising against the room width
+  would map the outer eighth of the picture at each side onto bare floor.
+
 #### Per-screensaver lighting, and getting the room back
 
 Each screensaver can drive the room differently. In **Settings → Art-Net
