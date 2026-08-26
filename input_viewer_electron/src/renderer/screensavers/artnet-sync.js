@@ -300,15 +300,34 @@ export function colourEndpoint(baseUrl, target) {
 }
 
 /**
+ * Screensavers the relay happens to have a matching effect for.
+ *
+ * Only pairings where the effect genuinely mirrors what is on the wall, not
+ * every name that rhymes: Plasma drives the plasma field, Metaballs drives blobs
+ * (which is the same idea under another name), and Wave Tank drives ripple.
+ * Everything else stays reactive, because a mismatched effect is worse than the
+ * dominant colour -- it puts the room out of step with the screen.
+ *
+ * These are defaults, not overrides. An explicit entry in `artnetSceneBySaver`
+ * always wins, including an explicit `'reactive'`, so anyone who prefers the
+ * colour can say so and keep it.
+ */
+export const DEFAULT_SAVER_MODES = Object.freeze({
+  Plasma: 'effect:plasma',
+  Metaballs: 'effect:blobs',
+  'Wave Tank': 'effect:ripple'
+})
+
+/**
  * Resolve what the room should do for a given screensaver.
  *
  * `artnetSceneBySaver` maps a saver's **display name** -- the `name` field of its
  * module, e.g. `'Matrix Rain'`, which is what startScreensaver() returns -- to
  * one of:
  *
- * - `'reactive'` (or absent) -- drive the lights from the picture, using the
- *   global `artnetTarget`. This is the default, so adding the mapping changes
- *   nothing until somebody sets an entry.
+ * - `'reactive'` -- drive the lights from the picture, using the global
+ *   `artnetTarget`. The default for all but the few savers in
+ *   DEFAULT_SAVER_MODES, which pair with a matching effect.
  * - `'off'` -- leave the room alone entirely for this saver.
  * - `'scene:<name>'` -- post that scene once when the saver starts.
  * - `'effect:<name>'` -- run that effect for this saver, overriding the global
@@ -319,7 +338,13 @@ export function colourEndpoint(baseUrl, target) {
  * @returns {{kind: 'reactive'|'off'|'scene'|'effect', name: string}}
  */
 export function modeForSaver(saver, bySaver) {
-  const raw = String((bySaver && bySaver[saver]) || 'reactive').trim()
+  const configured = bySaver && Object.prototype.hasOwnProperty.call(bySaver, saver)
+    ? bySaver[saver]
+    : DEFAULT_SAVER_MODES[saver]
+  // hasOwnProperty rather than a truthiness check, so an explicit 'reactive'
+  // entry beats the built-in pairing instead of falling through to it -- opting
+  // out has to be possible.
+  const raw = String(configured || 'reactive').trim()
   if (raw === 'off') return { kind: 'off', name: '' }
   if (raw.startsWith('scene:')) {
     const name = raw.slice('scene:'.length).trim()
@@ -393,6 +418,117 @@ export function sceneEndpoint(baseUrl, name) {
 export function stripEndpoint(baseUrl, name) {
   const base = String(baseUrl || '').replace(/\/+$/, '')
   return `${base}/strips/${encodeURIComponent(name)}`
+}
+
+/**
+ * How each effect is driven from the picture.
+ *
+ * THIS TABLE EXISTS BECAUSE THE PARAMETERS ARE NOT INTERCHANGEABLE. Every effect
+ * declares its own set, and the relay ignores anything it does not recognise --
+ * silently, with a 200. 3.1.0 sent the spot's shape
+ * (`r,g,b,cx,cy,diameter,softness`) to whichever effect was configured, so
+ * `effect:plasma` -- which takes `scale`, `speed` and `brightness` and no colour
+ * at all -- received seven keys it had no use for and ran at its defaults
+ * forever. It looked connected and was not.
+ *
+ * `field: true` marks the effects the relay can nudge through `/field/params`.
+ * The other ten are start-and-leave: their parameters can only be changed by
+ * re-POSTing the effect, which resets its animation phase, so nudging them every
+ * second would be a visible stutter in exchange for nothing.
+ *
+ * Each builder receives:
+ * - `col`   the frame's dominant colour, already scaled by maxBrightness
+ * - `focus` the luminance centroid and horizontal spread
+ * - `level` the frame's overall brightness, 0..1
+ */
+export const EFFECT_DRIVERS = {
+  // Positional: a circle of light that follows the bright part of the wall.
+  spot: {
+    field: true,
+    params: (col, focus, level, cfg) => ({
+      r: col.r, g: col.g, b: col.b,
+      cx: round4(focus.cx),
+      cy: round4(cfg.spotDepth),
+      diameter: round4(spotDiameter(focus.spread)),
+      softness: SPOT_SOFTNESS
+    })
+  },
+  // Rings from a moving origin. Takes a centre, so it tracks like the spot does.
+  ripple: {
+    field: true,
+    params: (col, focus, level, cfg) => ({
+      r: col.r, g: col.g, b: col.b,
+      cx: round4(focus.cx),
+      cy: round4(cfg.spotDepth),
+      // A concentrated frame gets tight rings, a diffuse one broad ones.
+      wavelength: round4(0.15 + focus.spread * 0.5)
+    })
+  },
+  // Generates its own colour field, so only its level and character are ours.
+  // This is the one the Plasma screensaver pairs with.
+  plasma: {
+    field: true,
+    params: (col, focus, level) => ({
+      scale: round4(0.6 + focus.spread * 1.4),
+      speed: round4(0.3 + level * 0.7),
+      brightness: round4(level)
+    })
+  },
+  aurora: {
+    field: true,
+    params: (col, focus, level) => ({
+      scale: round4(0.5 + focus.spread * 1.5),
+      speed: round4(0.2 + level * 0.5),
+      brightness: round4(level)
+    })
+  },
+  blobs: {
+    field: true,
+    params: (col, focus, level) => ({
+      r: col.r, g: col.g, b: col.b,
+      // A tight frame reads as few large blobs, a busy one as many small.
+      size: round4(0.12 + (1 - focus.spread) * 0.25),
+      count: Math.max(2, Math.round(2 + focus.spread * 6)),
+      speed: round4(0.3 + level * 0.6)
+    })
+  },
+  sweep: {
+    field: true,
+    params: (col, focus, level) => ({
+      r: col.r, g: col.g, b: col.b,
+      width: round4(0.1 + focus.spread * 0.4),
+      speed: round4(0.3 + level * 0.7)
+    })
+  },
+  tunnel: {
+    field: true,
+    params: (col, focus, level) => ({
+      speed: round4(0.3 + level * 0.7),
+      brightness: round4(level),
+      rings: Math.max(2, Math.round(3 + focus.spread * 5)),
+      arms: Math.max(2, Math.round(2 + (1 - focus.spread) * 4))
+    })
+  }
+}
+
+/**
+ * Build the request body for an effect, or null if it is not one we drive.
+ *
+ * Every entry in EFFECT_DRIVERS is field-based, which is what makes the nudge
+ * path below unconditional. That invariant is asserted by test rather than
+ * re-checked here: a non-field driver would need the start-and-leave path, and a
+ * silent `field` flag nobody reads would not tell whoever added it that.
+ *
+ * A name absent from EFFECT_DRIVERS is still a legitimate effect -- `fire`,
+ * `police`, `sparkle` and the rest all work -- it just gets started and left
+ * alone rather than steered.
+ *
+ * @returns {{params: object, field: boolean}|null}
+ */
+export function effectDriver(name, col, focus, level, cfg) {
+  const driver = EFFECT_DRIVERS[name]
+  if (!driver) return null
+  return { params: driver.params(col, focus, level, cfg), field: driver.field }
 }
 
 /** `POST /effects/{name}` -- starts an effect, body is a flat EffectRequest. */
@@ -674,31 +810,38 @@ export function createArtnetSync(options) {
         : effectNameFor(cfg.target)
       if (effect) {
         const focus = luminanceFocus(rgba)
-        // Brightness is PRE-MULTIPLIED into rgb rather than sent as its own
-        // field: the field effects take r/g/b/cx/cy/diameter/softness and have
-        // no brightness parameter, so a `brightness` key would be silently
-        // dropped and maxBrightness would quietly stop working.
-        const spot = {
+        // Colour is PRE-MULTIPLIED by brightness rather than sent as its own
+        // field. Most effects have no brightness parameter, so the key would be
+        // silently dropped and maxBrightness would quietly stop capping. The two
+        // that do take brightness get it from `level` below.
+        const scaled = {
           r: Math.round(col.r * brightness),
           g: Math.round(col.g * brightness),
-          b: Math.round(col.b * brightness),
-          // Rounded because the centroid is a float division and lands on
-          // things like 0.5000000000000001, which is three times the JSON for
-          // no extra precision the fixtures could possibly render.
-          cx: round4(focus.cx),
-          cy: round4(cfg.spotDepth),
-          diameter: round4(spotDiameter(focus.spread)),
-          softness: SPOT_SOFTNESS
+          b: Math.round(col.b * brightness)
         }
-        lastSpot = { effect, ...spot }
+        const level = round4(brightness)
+        const driver = effectDriver(effect, scaled, focus, level, cfg)
+        const starting = runningEffect !== effect
+
+        // An effect we have no driver for is started once and left alone: its
+        // parameters can only be changed by re-POSTing it, which resets its
+        // animation phase. Nudging it every second would stutter for nothing.
+        if (!driver) {
+          if (!starting) { inFlight = false; return }
+          lastSpot = { effect, params: null }
+          post(effectEndpoint(cfg.url, effect), {})
+            .then((ok) => { runningEffect = ok ? effect : null })
+            .finally(() => { inFlight = false })
+          return
+        }
+
+        lastSpot = { effect, ...driver.params }
 
         // First send starts the effect (a full EffectRequest); every send after
         // that is a partial /field/params update, which is one small POST rather
-        // than a restart -- restarting each second would reset the effect's own
-        // animation phase and make it stutter.
-        const starting = runningEffect !== effect
+        // than a restart.
         const url = starting ? effectEndpoint(cfg.url, effect) : fieldParamsEndpoint(cfg.url)
-        const body = starting ? spot : { params: spot }
+        const body = starting ? driver.params : { params: driver.params }
         post(url, body)
           .then((ok) => { runningEffect = ok ? effect : null })
           .finally(() => { inFlight = false })
